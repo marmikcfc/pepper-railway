@@ -20,6 +20,7 @@ import {
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { collectPersistentMcpEnvVars } from './mcp-installer.js';
 import { collectSkillEnvVars } from './skill-installer.js';
 import {
   CONTAINER_RUNTIME_BIN,
@@ -259,7 +260,8 @@ export function readSecrets(): Record<string, string> {
   ];
   const mcpEnvKeys = collectMcpEnvVars();
   const skillEnvKeys = collectSkillEnvVars();
-  const allKeys = [...coreKeys, ...mcpEnvKeys, ...skillEnvKeys];
+  const persistentMcpEnvKeys = collectPersistentMcpEnvVars();
+  const allKeys = [...coreKeys, ...mcpEnvKeys, ...skillEnvKeys, ...persistentMcpEnvKeys];
 
   const fromFile = readEnvFile(allKeys);
   // Fallback to process.env for Railway (secrets set as env vars, no .env file)
@@ -361,10 +363,12 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
+    (input as unknown as Record<string, unknown>).secretKeyNames = Object.keys(input.secrets);
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs
     delete input.secrets;
+    delete (input as unknown as Record<string, unknown>).secretKeyNames;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

@@ -189,18 +189,22 @@ function createPreCompactHook(assistantName?: string): HookCallback {
   };
 }
 
-// Secrets to strip from Bash tool subprocess environments.
-// These are needed by claude-code for API auth but should never
-// be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+// Default secrets to strip from Bash tool subprocess environments.
+// Additional keys are passed dynamically via containerInput.secretKeyNames.
+const DEFAULT_SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-function createSanitizeBashHook(): HookCallback {
+function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
+  const allSecretKeys = [...new Set([
+    ...DEFAULT_SECRET_ENV_VARS,
+    ...extraSecretKeys,
+  ])];
+
   return async (input, _toolUseId, _context) => {
     const preInput = input as PreToolUseHookInput;
     const command = (preInput.tool_input as { command?: string })?.command;
     if (!command) return {};
 
-    const unsetPrefix = `unset ${SECRET_ENV_VARS.join(' ')} 2>/dev/null; `;
+    const unsetPrefix = `unset ${allSecretKeys.join(' ')} 2>/dev/null; `;
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
@@ -480,7 +484,7 @@ async function runQuery(
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook((containerInput as unknown as Record<string, unknown>).secretKeyNames as string[] || [])] }],
       },
     }
   })) {

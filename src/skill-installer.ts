@@ -54,9 +54,7 @@ export interface InstallSkillsResult {
  * Parse YAML frontmatter from a SKILL.md file.
  * Returns the frontmatter as a plain object, or null if none found.
  */
-function parseFrontmatter(
-  content: string,
-): Record<string, unknown> | null {
+function parseFrontmatter(content: string): Record<string, unknown> | null {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
 
@@ -129,9 +127,7 @@ function parseFrontmatter(
 /**
  * Extract required inputs (env vars) from parsed frontmatter.
  */
-function extractInputs(
-  frontmatter: Record<string, unknown>,
-): SkillInput[] {
+function extractInputs(frontmatter: Record<string, unknown>): SkillInput[] {
   const inputs = frontmatter.inputs;
   if (!Array.isArray(inputs)) return [];
 
@@ -221,7 +217,7 @@ export async function installSkillsFromRepo(
     // The --agent claude-code flag targets the Claude Code skills directory.
     // Build env: forward GITHUB_TOKEN so npx skills add can clone private repos
     const childEnv: Record<string, string> = {
-      ...process.env as Record<string, string>,
+      ...(process.env as Record<string, string>),
       DO_NOT_TRACK: '1',
     };
     // Configure git to use token-based auth for private GitHub repos
@@ -235,15 +231,12 @@ export async function installSkillsFromRepo(
       childEnv.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${Buffer.from(`x-access-token:${ghToken}`).toString('base64')}`;
     }
 
-    execSync(
-      `npx -y skills add ${repo} --all --copy --agent claude-code`,
-      {
-        cwd: tmpDir,
-        stdio: 'pipe',
-        timeout: 120_000,
-        env: childEnv,
-      },
-    );
+    execSync(`npx -y skills add ${repo} --all --copy --agent claude-code`, {
+      cwd: tmpDir,
+      stdio: 'pipe',
+      timeout: 120_000,
+      env: childEnv,
+    });
 
     // npx skills add installs to {cwd}/.claude/skills/ for claude-code
     const installedDir = path.join(tmpDir, '.claude', 'skills');
@@ -305,6 +298,65 @@ export async function installSkillsFromRepo(
 }
 
 /**
+ * Remove a skill by name. Deletes the skill directory and removes from lock file.
+ */
+export function removeSkill(name: string): { removed: boolean; error?: string } {
+  const skillsDir = path.join(process.cwd(), 'container', 'skills');
+  const skillDir = path.join(skillsDir, name);
+
+  // Remove the skill directory
+  if (fs.existsSync(skillDir)) {
+    fs.rmSync(skillDir, { recursive: true, force: true });
+    logger.info({ skill: name }, 'Removed skill directory');
+  }
+
+  // Remove from lock file (match by skill name appearing in any repo entry)
+  const lock = readLockFile();
+  let removed = false;
+  for (const [key, entry] of Object.entries(lock.skills)) {
+    // The skill name might be the repo key or a subdirectory installed from it
+    if (key === name || key.endsWith(`/${name}`)) {
+      delete lock.skills[key];
+      removed = true;
+    }
+  }
+  if (removed) {
+    writeLockFile(lock);
+  }
+
+  return { removed: removed || fs.existsSync(skillDir) === false };
+}
+
+/**
+ * List all installed skills from the lock file and skills directory.
+ */
+export function listSkills(): { skills: Array<{ name: string; source: string; sourceType: string }> } {
+  const lock = readLockFile();
+  const skillsDir = path.join(process.cwd(), 'container', 'skills');
+
+  // Include skills from lock file
+  const skills = Object.entries(lock.skills).map(([key, entry]) => ({
+    name: key,
+    source: entry.source,
+    sourceType: entry.sourceType,
+  }));
+
+  // Also include any skill directories not in lock file (manually added)
+  if (fs.existsSync(skillsDir)) {
+    for (const entry of fs.readdirSync(skillsDir)) {
+      if (entry.startsWith('.')) continue;
+      const fullPath = path.join(skillsDir, entry);
+      if (!fs.statSync(fullPath).isDirectory()) continue;
+      if (!skills.some((s) => s.name === entry)) {
+        skills.push({ name: entry, source: 'local', sourceType: 'local' });
+      }
+    }
+  }
+
+  return { skills };
+}
+
+/**
  * Sync all skills from the lock file on startup.
  * Re-installs each registered repo via `npx skills add` so skills
  * survive Railway deploys and stay up-to-date with their source repos.
@@ -318,10 +370,7 @@ export async function syncSkillsOnStartup(): Promise<void> {
     return;
   }
 
-  logger.info(
-    { repoCount: repos.length },
-    'Syncing skills from lock file',
-  );
+  logger.info({ repoCount: repos.length }, 'Syncing skills from lock file');
 
   for (const entry of repos) {
     if (entry.sourceType !== 'github') continue;

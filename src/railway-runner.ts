@@ -159,7 +159,8 @@ export async function runRailwayAgent(
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: groupDir,
       env: {
-        ...process.env,
+        PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+        NODE_PATH: process.env.NODE_PATH || '',
         TZ: TIMEZONE,
         HOME: claudeDir.replace(/\/.claude$/, ''), // Parent of .claude dir
         NANOCLAW_WORKSPACE_GROUP: groupDir,
@@ -167,6 +168,8 @@ export async function runRailwayAgent(
         NANOCLAW_WORKSPACE_EXTRA: extraDir || '',
         NANOCLAW_IPC_DIR: ipcDir,
         NANOCLAW_IPC_INPUT: path.join(ipcDir, 'input'),
+        LOG_LEVEL: process.env.LOG_LEVEL || '',
+        NODE_ENV: process.env.NODE_ENV || '',
       },
     });
 
@@ -177,11 +180,13 @@ export async function runRailwayAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    // Pass secrets via stdin
+    // Pass secrets via stdin (never exposed as env vars)
     input.secrets = readSecrets();
+    (input as unknown as Record<string, unknown>).secretKeyNames = Object.keys(input.secrets);
     child.stdin.write(JSON.stringify(input));
     child.stdin.end();
     delete input.secrets;
+    delete (input as unknown as Record<string, unknown>).secretKeyNames;
 
     // Streaming output parsing (same protocol as container-runner)
     let parseBuffer = '';

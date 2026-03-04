@@ -43,6 +43,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { syncMcpOnStartup } from './mcp-installer.js';
 import { syncSkillsOnStartup } from './skill-installer.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -459,6 +460,9 @@ async function main(): Promise<void> {
   // Sync skills from lock file (re-clones registered repos so skills
   // survive deploys and stay up-to-date with their source repos)
   await syncSkillsOnStartup();
+
+  // Sync persistent MCP servers (rebuild .mcp.json from lock file)
+  await syncMcpOnStartup();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

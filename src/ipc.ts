@@ -9,7 +9,17 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { appendEnvVar } from './env.js';
 import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { installSkillsFromRepo } from './skill-installer.js';
+import {
+  addMcpServer,
+  listMcpServers,
+  rebuildMcpJson,
+  removeMcpServer,
+} from './mcp-installer.js';
+import {
+  installSkillsFromRepo,
+  listSkills,
+  removeSkill,
+} from './skill-installer.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -179,6 +189,10 @@ export async function processTaskIpc(
     // For set_env_var
     key?: string;
     value?: string;
+    // For add_mcp_server
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -431,8 +445,7 @@ export async function processTaskIpc(
             JSON.stringify({
               installed: [],
               requiredInputs: [],
-              error:
-                err instanceof Error ? err.message : String(err),
+              error: err instanceof Error ? err.message : String(err),
             }),
           );
         }
@@ -441,6 +454,171 @@ export async function processTaskIpc(
           { sourceGroup },
           'Unauthorized install_skills attempt blocked',
         );
+      }
+      break;
+
+    case 'remove_skill':
+      if (isMain && data.name && data.requestId) {
+        logger.info(
+          { name: data.name, requestId: data.requestId, sourceGroup },
+          'Removing skill via IPC',
+        );
+        try {
+          const result = removeSkill(data.name);
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info({ name: data.name, removed: result.removed }, 'Skill removed via IPC');
+        } catch (err) {
+          logger.error({ name: data.name, err }, 'Failed to remove skill via IPC');
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ removed: false, error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized remove_skill attempt blocked');
+      }
+      break;
+
+    case 'list_skills':
+      if (isMain && data.requestId) {
+        try {
+          const result = listSkills();
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info({ skillCount: result.skills.length }, 'Skills listed via IPC');
+        } catch (err) {
+          logger.error({ err }, 'Failed to list skills via IPC');
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ skills: [], error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized list_skills attempt blocked');
+      }
+      break;
+
+    case 'add_mcp_server':
+      if (isMain && data.name && data.command && data.requestId) {
+        logger.info(
+          { name: data.name, command: data.command, sourceGroup },
+          'Adding MCP server via IPC',
+        );
+        try {
+          const result = addMcpServer(data.name, {
+            command: data.command,
+            args: data.args || [],
+            env: data.env,
+          });
+          rebuildMcpJson();
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info({ name: data.name, envVarsNeeded: result.envVarsNeeded }, 'MCP server added via IPC');
+        } catch (err) {
+          logger.error({ name: data.name, err }, 'Failed to add MCP server via IPC');
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ added: false, error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized add_mcp_server attempt blocked');
+      }
+      break;
+
+    case 'remove_mcp_server':
+      if (isMain && data.name && data.requestId) {
+        logger.info({ name: data.name, sourceGroup }, 'Removing MCP server via IPC');
+        try {
+          const result = removeMcpServer(data.name);
+          rebuildMcpJson();
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info({ name: data.name, removed: result.removed }, 'MCP server removed via IPC');
+        } catch (err) {
+          logger.error({ name: data.name, err }, 'Failed to remove MCP server via IPC');
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ removed: false, error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized remove_mcp_server attempt blocked');
+      }
+      break;
+
+    case 'list_mcp_servers':
+      if (isMain && data.requestId) {
+        try {
+          const result = listMcpServers();
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info({ serverCount: result.servers.length }, 'MCP servers listed via IPC');
+        } catch (err) {
+          logger.error({ err }, 'Failed to list MCP servers via IPC');
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ servers: [], error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized list_mcp_servers attempt blocked');
       }
       break;
 
@@ -463,10 +641,7 @@ export async function processTaskIpc(
             'Environment variable set via IPC',
           );
         } catch (err) {
-          logger.error(
-            { key: data.key, err },
-            'Failed to set env var via IPC',
-          );
+          logger.error({ key: data.key, err }, 'Failed to set env var via IPC');
         }
       } else if (!isMain) {
         logger.warn(

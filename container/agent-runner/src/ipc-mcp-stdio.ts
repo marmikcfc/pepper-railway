@@ -281,43 +281,158 @@ Use available_groups.json to find the JID for a group. The folder name must be c
 );
 
 server.tool(
-  'install_skills',
-  'Install agent skills from a GitHub repository. The repo should contain SKILL.md files defining skills. Returns installed skill names and any required environment variables (credentials) that need to be set. A progress message is sent to the user automatically. After installation, use send_message to tell the user what was installed and ask for any missing credentials — do NOT wait for your final output to communicate results.',
+  'manage_skills',
+  'Manage agent skills. Actions: "add" installs skills from a GitHub repo (requires repo param), "remove" removes a skill by name, "list" shows all installed skills. A progress message is sent to the user for add. After adding, use send_message to tell the user what was installed and ask for any missing credentials — do NOT wait for your final output.',
   {
-    repo: z.string().describe('GitHub repo (owner/repo or full URL)'),
+    action: z.enum(['add', 'remove', 'list']).describe('Action to perform'),
+    repo: z.string().optional().describe('GitHub repo (owner/repo or full URL) — required for "add"'),
+    name: z.string().optional().describe('Skill name — required for "remove"'),
   },
   async (args) => {
     if (!isMain) {
       return {
-        content: [{ type: 'text' as const, text: 'Only the main group can install skills.' }],
+        content: [{ type: 'text' as const, text: 'Only the main group can manage skills.' }],
         isError: true,
       };
     }
 
-    // Send a progress message to the user immediately
-    writeIpcFile(MESSAGES_DIR, {
-      type: 'message',
-      chatJid,
-      text: `Installing skills from \`${args.repo}\`...`,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    });
+    const INPUT_DIR = path.join(IPC_DIR, 'input');
+    const timeout = 120_000;
+    const pollInterval = 500;
 
-    const requestId = `skill-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (args.action === 'add') {
+      if (!args.repo) {
+        return {
+          content: [{ type: 'text' as const, text: 'The "repo" parameter is required for the "add" action.' }],
+          isError: true,
+        };
+      }
+
+      // Send a progress message to the user immediately
+      writeIpcFile(MESSAGES_DIR, {
+        type: 'message',
+        chatJid,
+        text: `Installing skills from \`${args.repo}\`...`,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const requestId = `skill-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      writeIpcFile(TASKS_DIR, {
+        type: 'install_skills',
+        repo: args.repo,
+        requestId,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+      const start = Date.now();
+
+      while (Date.now() - start < timeout) {
+        if (fs.existsSync(responseFile)) {
+          try {
+            const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+            fs.unlinkSync(responseFile);
+
+            if (result.error) {
+              return {
+                content: [{ type: 'text' as const, text: `Failed to install skills: ${result.error}` }],
+                isError: true,
+              };
+            }
+
+            let response = `Installed ${result.installed.length} skill(s): ${result.installed.join(', ')}`;
+            if (result.requiredInputs && result.requiredInputs.length > 0) {
+              response += '\n\nRequired environment variables:';
+              for (const input of result.requiredInputs) {
+                response += `\n- ${input.envVar}: ${input.description}${input.required ? ' (required)' : ' (optional)'}`;
+              }
+              response += '\n\nUse the set_env_var tool to set each required credential.';
+            }
+
+            return { content: [{ type: 'text' as const, text: response }] };
+          } catch (err) {
+            return {
+              content: [{ type: 'text' as const, text: `Error reading install result: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: 'Timed out waiting for skill installation to complete.' }],
+        isError: true,
+      };
+    }
+
+    if (args.action === 'remove') {
+      if (!args.name) {
+        return {
+          content: [{ type: 'text' as const, text: 'The "name" parameter is required for the "remove" action.' }],
+          isError: true,
+        };
+      }
+
+      const requestId = `skill-remove-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      writeIpcFile(TASKS_DIR, {
+        type: 'remove_skill',
+        name: args.name,
+        requestId,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+      const start = Date.now();
+
+      while (Date.now() - start < timeout) {
+        if (fs.existsSync(responseFile)) {
+          try {
+            const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+            fs.unlinkSync(responseFile);
+
+            if (result.error) {
+              return {
+                content: [{ type: 'text' as const, text: `Failed to remove skill: ${result.error}` }],
+                isError: true,
+              };
+            }
+
+            return {
+              content: [{ type: 'text' as const, text: result.removed ? `Skill "${args.name}" removed.` : `Skill "${args.name}" not found.` }],
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text' as const, text: `Error reading remove result: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: 'Timed out waiting for skill removal to complete.' }],
+        isError: true,
+      };
+    }
+
+    // list
+    const requestId = `skill-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     writeIpcFile(TASKS_DIR, {
-      type: 'install_skills',
-      repo: args.repo,
+      type: 'list_skills',
       requestId,
       groupFolder,
       timestamp: new Date().toISOString(),
     });
 
-    // Poll for response from host
-    const INPUT_DIR = path.join(IPC_DIR, 'input');
     const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
-    const timeout = 120_000; // 2 minutes for cloning
-    const pollInterval = 500;
     const start = Date.now();
 
     while (Date.now() - start < timeout) {
@@ -328,24 +443,23 @@ server.tool(
 
           if (result.error) {
             return {
-              content: [{ type: 'text' as const, text: `Failed to install skills: ${result.error}` }],
+              content: [{ type: 'text' as const, text: `Failed to list skills: ${result.error}` }],
               isError: true,
             };
           }
 
-          let response = `Installed ${result.installed.length} skill(s): ${result.installed.join(', ')}`;
-          if (result.requiredInputs && result.requiredInputs.length > 0) {
-            response += '\n\nRequired environment variables:';
-            for (const input of result.requiredInputs) {
-              response += `\n- ${input.envVar}: ${input.description}${input.required ? ' (required)' : ' (optional)'}`;
-            }
-            response += '\n\nUse the set_env_var tool to set each required credential.';
+          if (!result.skills || result.skills.length === 0) {
+            return { content: [{ type: 'text' as const, text: 'No skills installed.' }] };
           }
 
+          let response = `Installed skills (${result.skills.length}):`;
+          for (const skill of result.skills) {
+            response += `\n- ${skill.name} (source: ${skill.source}, type: ${skill.sourceType})`;
+          }
           return { content: [{ type: 'text' as const, text: response }] };
         } catch (err) {
           return {
-            content: [{ type: 'text' as const, text: `Error reading install result: ${err instanceof Error ? err.message : String(err)}` }],
+            content: [{ type: 'text' as const, text: `Error reading list result: ${err instanceof Error ? err.message : String(err)}` }],
             isError: true,
           };
         }
@@ -354,7 +468,207 @@ server.tool(
     }
 
     return {
-      content: [{ type: 'text' as const, text: 'Timed out waiting for skill installation to complete.' }],
+      content: [{ type: 'text' as const, text: 'Timed out waiting for skill list.' }],
+      isError: true,
+    };
+  },
+);
+
+server.tool(
+  'manage_mcp_servers',
+  'Manage MCP (Model Context Protocol) servers. Actions: "add" registers a new MCP server (requires name, command, args), "remove" removes a server by name, "list" shows all registered servers. Servers persist across restarts. After adding, use set_env_var to set any required credentials.',
+  {
+    action: z.enum(['add', 'remove', 'list']).describe('Action to perform'),
+    name: z.string().optional().describe('Server name — required for "add" and "remove"'),
+    command: z.string().optional().describe('Command to run the server (e.g., "npx") — required for "add"'),
+    args: z.array(z.string()).optional().describe('Command arguments (e.g., ["-y", "@hubspot/mcp-server"]) — required for "add"'),
+    env: z.record(z.string(), z.string()).optional().describe('Environment variables (e.g., {"HUBSPOT_TOKEN": "${HUBSPOT_TOKEN}"}) — optional for "add"'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can manage MCP servers.' }],
+        isError: true,
+      };
+    }
+
+    const INPUT_DIR = path.join(IPC_DIR, 'input');
+    const timeout = 30_000;
+    const pollInterval = 500;
+
+    if (args.action === 'add') {
+      if (!args.name || !args.command || !args.args) {
+        return {
+          content: [{ type: 'text' as const, text: 'The "name", "command", and "args" parameters are required for the "add" action.' }],
+          isError: true,
+        };
+      }
+
+      // Send a progress message to the user immediately
+      writeIpcFile(MESSAGES_DIR, {
+        type: 'message',
+        chatJid,
+        text: `Adding MCP server \`${args.name}\`...`,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const requestId = `mcp-add-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      writeIpcFile(TASKS_DIR, {
+        type: 'add_mcp_server',
+        name: args.name,
+        command: args.command,
+        args: args.args,
+        env: args.env,
+        requestId,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+      const start = Date.now();
+
+      while (Date.now() - start < timeout) {
+        if (fs.existsSync(responseFile)) {
+          try {
+            const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+            fs.unlinkSync(responseFile);
+
+            if (result.error) {
+              return {
+                content: [{ type: 'text' as const, text: `Failed to add MCP server: ${result.error}` }],
+                isError: true,
+              };
+            }
+
+            let response = `MCP server "${args.name}" added successfully.`;
+            if (result.envVarsNeeded && result.envVarsNeeded.length > 0) {
+              response += `\n\nRequired environment variables: ${result.envVarsNeeded.join(', ')}`;
+              response += '\n\nUse the set_env_var tool to set each required credential.';
+            }
+            response += '\n\nNote: The server will be available on the next agent invocation.';
+
+            return { content: [{ type: 'text' as const, text: response }] };
+          } catch (err) {
+            return {
+              content: [{ type: 'text' as const, text: `Error reading add result: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: 'Timed out waiting for MCP server registration.' }],
+        isError: true,
+      };
+    }
+
+    if (args.action === 'remove') {
+      if (!args.name) {
+        return {
+          content: [{ type: 'text' as const, text: 'The "name" parameter is required for the "remove" action.' }],
+          isError: true,
+        };
+      }
+
+      const requestId = `mcp-remove-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      writeIpcFile(TASKS_DIR, {
+        type: 'remove_mcp_server',
+        name: args.name,
+        requestId,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+      const start = Date.now();
+
+      while (Date.now() - start < timeout) {
+        if (fs.existsSync(responseFile)) {
+          try {
+            const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+            fs.unlinkSync(responseFile);
+
+            if (result.error) {
+              return {
+                content: [{ type: 'text' as const, text: `Failed to remove MCP server: ${result.error}` }],
+                isError: true,
+              };
+            }
+
+            return {
+              content: [{ type: 'text' as const, text: result.removed ? `MCP server "${args.name}" removed.` : `MCP server "${args.name}" not found.` }],
+            };
+          } catch (err) {
+            return {
+              content: [{ type: 'text' as const, text: `Error reading remove result: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: 'Timed out waiting for MCP server removal.' }],
+        isError: true,
+      };
+    }
+
+    // list
+    const requestId = `mcp-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'list_mcp_servers',
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          fs.unlinkSync(responseFile);
+
+          if (result.error) {
+            return {
+              content: [{ type: 'text' as const, text: `Failed to list MCP servers: ${result.error}` }],
+              isError: true,
+            };
+          }
+
+          if (!result.servers || result.servers.length === 0) {
+            return { content: [{ type: 'text' as const, text: 'No MCP servers registered.' }] };
+          }
+
+          let response = `Registered MCP servers (${result.servers.length}):`;
+          for (const server of result.servers) {
+            response += `\n- ${server.name}: ${server.command} ${(server.args || []).join(' ')}`;
+            if (server.env && Object.keys(server.env).length > 0) {
+              response += ` (env: ${Object.keys(server.env).join(', ')})`;
+            }
+          }
+          return { content: [{ type: 'text' as const, text: response }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text' as const, text: `Error reading list result: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Timed out waiting for MCP server list.' }],
       isError: true,
     };
   },
