@@ -7,6 +7,7 @@ import {
   IS_RAILWAY,
   POLL_INTERVAL,
   SLACK_MAIN_CHANNEL_ID,
+  TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -31,6 +32,7 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRegisteredGroup,
   getThreadMessages,
   getRouterState,
   initDatabase,
@@ -193,7 +195,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ).slice(-5);
     prompt = formatThreadWithContext(threadMsgs, recent);
   } else {
-    prompt = formatMessages(missedMessages);
+    prompt = formatMessages(missedMessages, TIMEZONE);
   }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -445,7 +447,7 @@ async function startMessageLoop(): Promise<void> {
               ASSISTANT_NAME,
             );
             messagesToSend = allPending.length > 0 ? allPending : groupMessages;
-            formatted = formatMessages(messagesToSend);
+            formatted = formatMessages(messagesToSend, TIMEZONE);
           }
 
           if (queue.sendMessage(chatJid, formatted)) {
