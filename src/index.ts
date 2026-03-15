@@ -138,7 +138,7 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
   const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter((c) => c.jid !== '__group_sync__' && c.is_group)
+    .filter((c) => c.jid !== '__group_sync__')
     .map((c) => ({
       jid: c.jid,
       name: c.name,
@@ -693,14 +693,23 @@ async function main(): Promise<void> {
       if (match) {
         mainJid = match.jid;
         mainName = match.name || ASSISTANT_NAME;
-      } else {
-        const chatNames = allChats
-          .filter((c) => c.name)
-          .map((c) => c.name)
-          .slice(0, 20);
+      }
+
+      // Priority 3: Use first available chat (covers DMs where chat name
+      // is the user's name, not the bot's)
+      if (!mainJid && allChats.length > 0) {
+        mainJid = allChats[0].jid;
+        mainName = allChats[0].name || ASSISTANT_NAME;
+        logger.info(
+          { jid: mainJid, name: mainName },
+          'No chat matching ASSISTANT_NAME — using first available chat as main',
+        );
+      }
+
+      if (!mainJid) {
         logger.warn(
-          { assistantName: ASSISTANT_NAME, availableChats: chatNames },
-          'No group matching ASSISTANT_NAME found. Set SLACK_MAIN_CHANNEL_ID, or create a group named after your bot, send a message, then restart.',
+          { assistantName: ASSISTANT_NAME },
+          'No chats found. Send a message to the bot, then restart.',
         );
       }
     }
@@ -721,23 +730,23 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-register any group channels the bot is a member of that aren't
-  // already registered. Runs on every startup so newly-added channels
-  // (Slack, Telegram, Discord, WhatsApp) are picked up automatically.
+  // Auto-register any chats (groups or DMs) the bot is a member of that
+  // aren't already registered. Runs on every startup so newly-added
+  // channels (Slack, Telegram, Discord, WhatsApp) are picked up automatically.
   {
     await Promise.all(
       channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(false)),
     );
     const allChats = getAllChats();
     for (const chat of allChats) {
-      if (!registeredGroups[chat.jid] && chat.is_group && chat.name) {
-        // Derive channel prefix for folder name (slack, tg, dc, wa)
+      if (!registeredGroups[chat.jid] && chat.name) {
+        // Derive channel prefix for folder name
         let prefix: string;
         if (chat.jid.startsWith('slack:')) prefix = 'slack';
         else if (chat.jid.startsWith('tg:')) prefix = 'tg';
         else if (chat.jid.startsWith('dc:')) prefix = 'dc';
-        else if (chat.jid.includes('@g.us')) prefix = 'wa';
-        else continue; // skip non-group JIDs (gmail, solo chats, etc.)
+        else if (chat.jid.includes('@g.us') || chat.jid.includes('@s.whatsapp.net')) prefix = 'wa';
+        else continue; // skip unknown JID formats (gmail, etc.)
 
         const safeName = chat.name
           .replace(/[^a-zA-Z0-9-]/g, '-')
@@ -753,7 +762,7 @@ async function main(): Promise<void> {
         });
         logger.info(
           { jid: chat.jid, name: chat.name, folder: folderName },
-          'Auto-registered channel group',
+          'Auto-registered chat',
         );
       }
     }
