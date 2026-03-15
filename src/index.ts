@@ -621,7 +621,10 @@ async function main(): Promise<void> {
         if (chatJid.startsWith('slack:')) prefix = 'slack';
         else if (chatJid.startsWith('tg:')) prefix = 'tg';
         else if (chatJid.startsWith('dc:')) prefix = 'dc';
-        else if (chatJid.includes('@g.us') || chatJid.includes('@s.whatsapp.net'))
+        else if (
+          chatJid.includes('@g.us') ||
+          chatJid.includes('@s.whatsapp.net')
+        )
           prefix = 'wa';
 
         if (prefix) {
