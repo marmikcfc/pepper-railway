@@ -445,12 +445,12 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  const modelOverride = sdkEnv.ANTHROPIC_MODEL || undefined;
+  const modelOverride = sdkEnv.ANTHROPIC_MODEL;
 
   for await (const message of query({
     prompt: stream,
     options: {
-      model: modelOverride,
+      ...(modelOverride ? { model: modelOverride } : {}),
       cwd: WORKSPACE_GROUP,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
