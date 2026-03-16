@@ -45,8 +45,9 @@ async function initTelemetry(
     process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
     process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
 
-    // Enable Langfuse debug logging
+    // Enable Langfuse debug logging — use console.error so it goes to stderr immediately
     process.env.LANGFUSE_LOG_LEVEL = 'DEBUG';
+    process.env.LANGFUSE_DEBUG = 'true';
 
     // Set OTEL resource attributes via env var
     process.env.OTEL_SERVICE_NAME = 'nanoclaw-agent';
@@ -75,6 +76,19 @@ async function initTelemetry(
 
     sdk.start();
     otelSdk = sdk;
+
+    // Test span to verify the OTEL pipeline works
+    try {
+      const { trace } = await import('@opentelemetry/api');
+      const tracer = trace.getTracer('nanoclaw-test');
+      const testSpan = tracer.startSpan('nanoclaw.test_span');
+      testSpan.setAttribute('test', 'langfuse-connectivity');
+      testSpan.end();
+      log('Test span created and ended — should appear in Langfuse');
+    } catch (e) {
+      log(`Test span failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     log('Langfuse telemetry initialized');
   } catch (err) {
     log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -711,7 +725,13 @@ async function main(): Promise<void> {
   } finally {
     // Flush telemetry before exit
     if (otelSdk) {
-      try { await otelSdk.shutdown(); } catch {}
+      try {
+        log('Flushing Langfuse telemetry...');
+        await otelSdk.shutdown();
+        log('Langfuse telemetry flushed');
+      } catch (err) {
+        log(`Langfuse flush error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 }
