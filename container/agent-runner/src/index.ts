@@ -16,8 +16,76 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import * as ClaudeAgentSDKModule from '@anthropic-ai/claude-agent-sdk';
+import { HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+
+// Langfuse telemetry (optional — only active when LANGFUSE_SECRET_KEY is set)
+let otelSdk: { shutdown: () => Promise<void> } | null = null;
+let propagateAttributesFn: ((attrs: Record<string, unknown>, fn: () => Promise<void>) => Promise<void>) | null = null;
+const ClaudeAgentSDK = { ...ClaudeAgentSDKModule };
+
+async function initTelemetry(
+  secrets: Record<string, string>,
+  agentContext: { groupFolder: string; chatJid: string; assistantName?: string }
+): Promise<void> {
+  if (!secrets.LANGFUSE_SECRET_KEY) return;
+
+  try {
+    const { NodeSDK } = await import('@opentelemetry/sdk-node');
+    const { LangfuseSpanProcessor, isDefaultExportSpan } = await import('@langfuse/otel');
+    const { ClaudeAgentSDKInstrumentation } = await import(
+      '@arizeai/openinference-instrumentation-claude-agent-sdk'
+    );
+
+    // Set Langfuse env vars for the OTEL exporter
+    process.env.LANGFUSE_PUBLIC_KEY = secrets.LANGFUSE_PUBLIC_KEY || '';
+    process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
+    process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
+
+    const instrumentation = new ClaudeAgentSDKInstrumentation();
+    instrumentation.manuallyInstrument(ClaudeAgentSDK);
+
+    const { Resource } = await import('@opentelemetry/resources');
+
+    const sdk = new NodeSDK({
+      resource: new Resource({
+        'service.name': 'nanoclaw-agent',
+        'nanoclaw.agent.name': agentContext.assistantName || 'unknown',
+        'nanoclaw.group': agentContext.groupFolder,
+        'nanoclaw.chat_jid': agentContext.chatJid,
+        'nanoclaw.railway_service_id': secrets.RAILWAY_SERVICE_ID || process.env.RAILWAY_SERVICE_ID || '',
+      }),
+      spanProcessors: [
+        new LangfuseSpanProcessor({
+          shouldExportSpan: ({ otelSpan }: { otelSpan: { instrumentationScope: { name: string } } }) =>
+            isDefaultExportSpan(otelSpan) ||
+            otelSpan.instrumentationScope.name ===
+              '@arizeai/openinference-instrumentation-claude-agent-sdk',
+        }),
+      ],
+      instrumentations: [instrumentation],
+    });
+
+    sdk.start();
+    otelSdk = sdk;
+
+    // Try to load propagateAttributes for tagging traces
+    try {
+      const tracing = await import('@langfuse/otel');
+      if ('propagateAttributes' in tracing) {
+        propagateAttributesFn = (tracing as Record<string, unknown>).propagateAttributes as typeof propagateAttributesFn;
+      }
+    } catch { /* propagateAttributes may not be available */ }
+
+    log('Langfuse telemetry initialized');
+  } catch (err) {
+    log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Use the instrumented module's query
+const { query } = ClaudeAgentSDK;
 
 interface ContainerInput {
   prompt: string;
@@ -565,6 +633,12 @@ async function main(): Promise<void> {
     for (const [key, value] of Object.entries(containerInput.secrets)) {
       sdkEnv[key] = value;
     }
+    // Initialize Langfuse telemetry if credentials are provided
+    await initTelemetry(containerInput.secrets as Record<string, string>, {
+      groupFolder: containerInput.groupFolder,
+      chatJid: containerInput.chatJid,
+      assistantName: containerInput.assistantName,
+    });
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -634,6 +708,11 @@ async function main(): Promise<void> {
       error: errorMessage
     });
     process.exit(1);
+  } finally {
+    // Flush telemetry before exit
+    if (otelSdk) {
+      try { await otelSdk.shutdown(); } catch {}
+    }
   }
 }
 
