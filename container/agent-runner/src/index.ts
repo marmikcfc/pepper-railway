@@ -22,7 +22,6 @@ import { fileURLToPath } from 'url';
 
 // Langfuse telemetry (optional — only active when LANGFUSE_SECRET_KEY is set)
 let otelSdk: { shutdown: () => Promise<void> } | null = null;
-let propagateAttributesFn: ((attrs: Record<string, unknown>, fn: () => Promise<void>) => Promise<void>) | null = null;
 const ClaudeAgentSDK = { ...ClaudeAgentSDKModule };
 
 async function initTelemetry(
@@ -46,43 +45,24 @@ async function initTelemetry(
     const instrumentation = new ClaudeAgentSDKInstrumentation();
     instrumentation.manuallyInstrument(ClaudeAgentSDK);
 
-    const resourceModule = await import('@opentelemetry/resources');
-    const ResourceClass = resourceModule.Resource || (resourceModule as Record<string, unknown>).default?.Resource;
-
-    const resourceAttrs = {
-      'service.name': 'nanoclaw-agent',
-      'nanoclaw.agent.name': agentContext.assistantName || 'unknown',
-      'nanoclaw.group': agentContext.groupFolder,
-      'nanoclaw.chat_jid': agentContext.chatJid,
-      'nanoclaw.railway_service_id': secrets.RAILWAY_SERVICE_ID || process.env.RAILWAY_SERVICE_ID || '',
-    };
+    // Set OTEL resource attributes via env var (avoids Resource import issues)
+    process.env.OTEL_SERVICE_NAME = 'nanoclaw-agent';
+    process.env.OTEL_RESOURCE_ATTRIBUTES = [
+      `nanoclaw.agent.name=${agentContext.assistantName || 'unknown'}`,
+      `nanoclaw.group=${agentContext.groupFolder}`,
+      `nanoclaw.chat_jid=${agentContext.chatJid}`,
+    ].join(',');
 
     const sdk = new NodeSDK({
-      ...(ResourceClass ? { resource: new ResourceClass(resourceAttrs) } : {}),
       spanProcessors: [
-        new LangfuseSpanProcessor({
-          shouldExportSpan: (ctx: Record<string, unknown>) => {
-            const span = ctx.otelSpan as { instrumentationScope?: { name?: string } } | undefined;
-            return isDefaultExportSpan(span) ||
-              span?.instrumentationScope?.name ===
-                '@arizeai/openinference-instrumentation-claude-agent-sdk';
-          },
-        }),
+        // @ts-ignore - LangfuseSpanProcessor typing mismatch with strict mode
+        new LangfuseSpanProcessor(),
       ],
       instrumentations: [instrumentation],
     });
 
     sdk.start();
     otelSdk = sdk;
-
-    // Try to load propagateAttributes for tagging traces
-    try {
-      const tracing = await import('@langfuse/otel');
-      if ('propagateAttributes' in tracing) {
-        propagateAttributesFn = (tracing as Record<string, unknown>).propagateAttributes as typeof propagateAttributesFn;
-      }
-    } catch { /* propagateAttributes may not be available */ }
-
     log('Langfuse telemetry initialized');
   } catch (err) {
     log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
