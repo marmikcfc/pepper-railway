@@ -45,7 +45,10 @@ async function initTelemetry(
     process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
     process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
 
-    // Set OTEL resource attributes via env var (avoids Resource import issues)
+    // Enable Langfuse debug logging
+    process.env.LANGFUSE_LOG_LEVEL = 'DEBUG';
+
+    // Set OTEL resource attributes via env var
     process.env.OTEL_SERVICE_NAME = 'nanoclaw-agent';
     process.env.OTEL_RESOURCE_ATTRIBUTES = [
       `nanoclaw.agent.name=${agentContext.assistantName || 'unknown'}`,
@@ -53,7 +56,11 @@ async function initTelemetry(
       `nanoclaw.chat_jid=${agentContext.chatJid}`,
     ].join(',');
 
+    // Follow exact docs order: instrument → create SDK → start
     const instrumentation = new ClaudeAgentSDKInstrumentation();
+    instrumentation.manuallyInstrument(ClaudeAgentSDK);
+
+    log(`query patched: ${ClaudeAgentSDKModule.query !== ClaudeAgentSDK.query}`);
 
     const sdk = new NodeSDK({
       spanProcessors: [
@@ -67,14 +74,8 @@ async function initTelemetry(
     });
 
     sdk.start();
-
-    // Instrument AFTER sdk.start() — the SDK registers the TracerProvider first
-    instrumentation.manuallyInstrument(ClaudeAgentSDK);
-
     otelSdk = sdk;
-    const origQuery = ClaudeAgentSDKModule.query;
-    const patchedQuery = ClaudeAgentSDK.query;
-    log(`Langfuse telemetry initialized (query patched: ${origQuery !== patchedQuery})`);
+    log('Langfuse telemetry initialized');
   } catch (err) {
     log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
