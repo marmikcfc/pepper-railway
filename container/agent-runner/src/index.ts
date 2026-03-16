@@ -28,7 +28,10 @@ async function initTelemetry(
   secrets: Record<string, string>,
   agentContext: { groupFolder: string; chatJid: string; assistantName?: string }
 ): Promise<void> {
-  if (!secrets.LANGFUSE_SECRET_KEY) return;
+  if (!secrets.LANGFUSE_SECRET_KEY) {
+    log('Langfuse telemetry skipped: LANGFUSE_SECRET_KEY not in secrets');
+    return;
+  }
 
   try {
     const { NodeSDK } = await import('@opentelemetry/sdk-node');
@@ -69,8 +72,11 @@ async function initTelemetry(
   }
 }
 
-// Use the instrumented module's query
-const { query } = ClaudeAgentSDK;
+// Use the instrumented module's query — accessed via getter so
+// instrumentation applied by manuallyInstrument() takes effect
+function getQuery() {
+  return ClaudeAgentSDK.query;
+}
 
 interface ContainerInput {
   prompt: string;
@@ -501,7 +507,7 @@ async function runQuery(
 
   const modelOverride = sdkEnv.ANTHROPIC_MODEL;
 
-  for await (const message of query({
+  for await (const message of getQuery()({
     prompt: stream,
     options: {
       ...(modelOverride ? { model: modelOverride } : {}),
