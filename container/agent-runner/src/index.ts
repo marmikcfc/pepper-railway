@@ -21,54 +21,41 @@ import { HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthrop
 import { fileURLToPath } from 'url';
 
 // Langfuse telemetry (optional — only active when LANGFUSE_SECRET_KEY is set)
+// Follows: https://langfuse.com/integrations/frameworks/claude-agent-sdk-js
 let otelSdk: { shutdown: () => Promise<void> } | null = null;
+
+// Step 3 from docs: create mutable copy
 const ClaudeAgentSDK = { ...ClaudeAgentSDKModule };
 
-async function initTelemetry(
-  secrets: Record<string, string>,
-  agentContext: { groupFolder: string; chatJid: string; assistantName?: string }
-): Promise<void> {
+async function initTelemetry(secrets: Record<string, string>): Promise<void> {
   if (!secrets.LANGFUSE_SECRET_KEY) {
     log('Langfuse telemetry skipped: LANGFUSE_SECRET_KEY not in secrets');
     return;
   }
 
   try {
+    // Step 2 from docs: set env vars BEFORE importing OTEL modules
+    process.env.LANGFUSE_PUBLIC_KEY = secrets.LANGFUSE_PUBLIC_KEY || '';
+    process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
+    process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
+
+    // Step 3 from docs: exact same code
     const { NodeSDK } = await import('@opentelemetry/sdk-node');
     const { LangfuseSpanProcessor, isDefaultExportSpan } = await import('@langfuse/otel');
     const { ClaudeAgentSDKInstrumentation } = await import(
       '@arizeai/openinference-instrumentation-claude-agent-sdk'
     );
 
-    // Set Langfuse env vars for the OTEL exporter
-    process.env.LANGFUSE_PUBLIC_KEY = secrets.LANGFUSE_PUBLIC_KEY || '';
-    process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
-    process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
-
-    // Enable Langfuse debug logging — use console.error so it goes to stderr immediately
-    process.env.LANGFUSE_LOG_LEVEL = 'DEBUG';
-    process.env.LANGFUSE_DEBUG = 'true';
-
-    // Set OTEL resource attributes via env var
-    process.env.OTEL_SERVICE_NAME = 'nanoclaw-agent';
-    process.env.OTEL_RESOURCE_ATTRIBUTES = [
-      `nanoclaw.agent.name=${agentContext.assistantName || 'unknown'}`,
-      `nanoclaw.group=${agentContext.groupFolder}`,
-      `nanoclaw.chat_jid=${agentContext.chatJid}`,
-    ].join(',');
-
-    // Follow exact docs order: instrument → create SDK → start
     const instrumentation = new ClaudeAgentSDKInstrumentation();
     instrumentation.manuallyInstrument(ClaudeAgentSDK);
 
-    log(`query patched: ${ClaudeAgentSDKModule.query !== ClaudeAgentSDK.query}`);
-
     const sdk = new NodeSDK({
       spanProcessors: [
-        // @ts-ignore - LangfuseSpanProcessor typing mismatch with strict mode
-        new LangfuseSpanProcessor({
-          flushAt: 1,
-          flushInterval: 1000,
+        new (LangfuseSpanProcessor as new (opts: Record<string, unknown>) => unknown)({
+          shouldExportSpan: ({ otelSpan }: { otelSpan: { instrumentationScope: { name: string } } }) =>
+            (isDefaultExportSpan as (span: unknown) => boolean)(otelSpan) ||
+            otelSpan.instrumentationScope.name ===
+              '@arizeai/openinference-instrumentation-claude-agent-sdk',
         }),
       ],
       instrumentations: [instrumentation],
@@ -76,27 +63,14 @@ async function initTelemetry(
 
     sdk.start();
     otelSdk = sdk;
-
-    // Test span to verify the OTEL pipeline works
-    try {
-      const { trace } = await import('@opentelemetry/api');
-      const tracer = trace.getTracer('nanoclaw-test');
-      const testSpan = tracer.startSpan('nanoclaw.test_span');
-      testSpan.setAttribute('test', 'langfuse-connectivity');
-      testSpan.end();
-      log('Test span created and ended — should appear in Langfuse');
-    } catch (e) {
-      log(`Test span failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-
     log('Langfuse telemetry initialized');
   } catch (err) {
     log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
-// Use the instrumented module's query — accessed via getter so
-// instrumentation applied by manuallyInstrument() takes effect
+// Step 4 from docs: destructure query from instrumented copy
+// Use getter so it always reads the (potentially patched) version
 function getQuery() {
   return ClaudeAgentSDK.query;
 }
@@ -648,11 +622,7 @@ async function main(): Promise<void> {
       sdkEnv[key] = value;
     }
     // Initialize Langfuse telemetry if credentials are provided
-    await initTelemetry(containerInput.secrets as Record<string, string>, {
-      groupFolder: containerInput.groupFolder,
-      chatJid: containerInput.chatJid,
-      assistantName: containerInput.assistantName,
-    });
+    await initTelemetry(containerInput.secrets as Record<string, string>);
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
