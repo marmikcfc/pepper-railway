@@ -184,7 +184,9 @@ export async function runRailwayAgent(
     // Pass secrets via stdin (never exposed as env vars)
     input.secrets = readSecrets();
     const secretKeyNames = Object.keys(input.secrets);
-    const secretKeysWithValues = secretKeyNames.filter(k => input.secrets![k]);
+    const secretKeysWithValues = secretKeyNames.filter(
+      (k) => input.secrets![k],
+    );
     logger.info(
       {
         group: group.name,
@@ -197,7 +199,8 @@ export async function runRailwayAgent(
       },
       'Passing secrets to agent runner',
     );
-    (input as unknown as Record<string, unknown>).secretKeyNames = secretKeyNames;
+    (input as unknown as Record<string, unknown>).secretKeyNames =
+      secretKeyNames;
     child.stdin.write(JSON.stringify(input));
     child.stdin.end();
     delete input.secrets;
@@ -284,7 +287,8 @@ export async function runRailwayAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.info({ process: group.folder, stream: 'stderr' }, line);
+        if (line)
+          logger.info({ process: group.folder, stream: 'stderr' }, line);
       }
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;

@@ -509,12 +509,20 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ' (no text)'}`);
+      log(`Result message keys: ${Object.keys(message).join(', ')}`);
+      log(`Result message: ${JSON.stringify(message).slice(0, 500)}`);
       writeOutput({
         status: 'success',
         result: textResult || null,
         newSessionId
       });
+    }
+
+    // Also log assistant messages to see the actual response text
+    if (message.type === 'assistant') {
+      const content = 'message' in message ? JSON.stringify((message as Record<string, unknown>).message).slice(0, 300) : 'no message field';
+      log(`Assistant message content: ${content}`);
     }
   }
 
