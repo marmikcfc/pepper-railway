@@ -4,6 +4,9 @@
 # Stage 1: Build agent-runner
 FROM node:22-slim AS agent-builder
 
+# better-sqlite3 requires native build tools
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build/agent-runner
 COPY container/agent-runner/package*.json ./
 RUN npm install
