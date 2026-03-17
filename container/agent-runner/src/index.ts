@@ -625,7 +625,8 @@ async function runQuery(
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
 
-  // Flush telemetry after each query so spans appear in Langfuse immediately
+  // Wait briefly for span processor to process onEnd, then flush
+  await new Promise(r => setTimeout(r, 200));
   await flushTelemetry();
 
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
