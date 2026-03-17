@@ -22,7 +22,7 @@ import { fileURLToPath } from 'url';
 
 // Langfuse telemetry (optional — only active when LANGFUSE_SECRET_KEY is set)
 // Follows: https://langfuse.com/integrations/frameworks/claude-agent-sdk-js
-let otelSdk: { shutdown: () => Promise<void> } | null = null;
+let otelSdk: { shutdown: () => Promise<void>; forceFlush: () => Promise<void> } | null = null;
 
 // Step 3 from docs: create mutable copy
 const ClaudeAgentSDK = { ...ClaudeAgentSDKModule };
@@ -51,6 +51,8 @@ async function initTelemetry(secrets: Record<string, string>): Promise<void> {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanProcessor = new (LangfuseSpanProcessor as any)({
+      flushAt: 1,           // Flush after every span
+      flushInterval: 1000,  // Flush at least every second
       shouldExportSpan: ({ otelSpan }: { otelSpan: { instrumentationScope: { name: string } } }) =>
         (isDefaultExportSpan as any)(otelSpan) ||
         otelSpan.instrumentationScope.name ===
@@ -68,6 +70,14 @@ async function initTelemetry(secrets: Record<string, string>): Promise<void> {
   } catch (err) {
     log(`Langfuse init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Flush telemetry spans without shutting down */
+async function flushTelemetry(): Promise<void> {
+  if (!otelSdk) return;
+  try {
+    await otelSdk.forceFlush();
+  } catch { /* non-fatal */ }
 }
 
 // Step 4 from docs: destructure query from instrumented copy
@@ -595,6 +605,10 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+
+  // Flush telemetry after each query so spans appear in Langfuse immediately
+  await flushTelemetry();
+
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
