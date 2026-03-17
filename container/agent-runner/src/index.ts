@@ -28,7 +28,10 @@ let otelSpanProcessor: { forceFlush: () => Promise<void> } | null = null;
 // Step 3 from docs: create mutable copy
 const ClaudeAgentSDK = { ...ClaudeAgentSDKModule };
 
-async function initTelemetry(secrets: Record<string, string>): Promise<void> {
+async function initTelemetry(
+  secrets: Record<string, string>,
+  agentContext?: { groupFolder: string; chatJid: string; assistantName?: string }
+): Promise<void> {
   if (!secrets.LANGFUSE_SECRET_KEY) {
     log('Langfuse telemetry skipped: LANGFUSE_SECRET_KEY not in secrets');
     return;
@@ -39,6 +42,16 @@ async function initTelemetry(secrets: Record<string, string>): Promise<void> {
     process.env.LANGFUSE_PUBLIC_KEY = secrets.LANGFUSE_PUBLIC_KEY || '';
     process.env.LANGFUSE_SECRET_KEY = secrets.LANGFUSE_SECRET_KEY;
     process.env.LANGFUSE_BASE_URL = secrets.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com';
+
+    // Set OTEL resource attributes for agent-level tagging in Langfuse
+    process.env.OTEL_SERVICE_NAME = 'nanoclaw-agent';
+    if (agentContext) {
+      process.env.OTEL_RESOURCE_ATTRIBUTES = [
+        `nanoclaw.agent.name=${agentContext.assistantName || 'unknown'}`,
+        `nanoclaw.group=${agentContext.groupFolder}`,
+        `nanoclaw.chat_jid=${agentContext.chatJid}`,
+      ].join(',');
+    }
 
     // Step 3 from docs: exact same code
     const { NodeSDK } = await import('@opentelemetry/sdk-node');
@@ -643,7 +656,11 @@ async function main(): Promise<void> {
       sdkEnv[key] = value;
     }
     // Initialize Langfuse telemetry if credentials are provided
-    await initTelemetry(containerInput.secrets as Record<string, string>);
+    await initTelemetry(containerInput.secrets as Record<string, string>, {
+      groupFolder: containerInput.groupFolder,
+      chatJid: containerInput.chatJid,
+      assistantName: containerInput.assistantName,
+    });
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
