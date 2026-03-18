@@ -10,6 +10,9 @@
  *   shutdown()        — flush and close everything
  */
 import type { Span, Tracer } from '@opentelemetry/api';
+import { randomUUID } from 'crypto';
+import type { AgentEvent, EventData } from './types.js';
+import * as cloudRelay from './cloud-relay.js';
 
 // Lazy-loaded modules (heavy deps, only load if Langfuse is configured)
 let tracer: Tracer | null = null;
@@ -26,6 +29,17 @@ const pendingSubagents = new Map<string, Span>(); // task_id → AGENT span
 let queryModel: string | null = null;
 let querySessionId: string | null = null;
 let lastAssistantText: string | null = null;
+
+// Cloud relay state
+let currentTraceId: string | null = null;
+let currentRootEventId: string | null = null;
+let seqCounter = 0;
+let agentChannel: string = 'unknown';
+let currentPrompt: string = ''; // stored for query_start completion update
+
+// Maps for correct parent tracking in the trace tree
+const toolUseIdToCloudId = new Map<string, string>(); // tool_use_id → cloud event UUID
+const taskIdToCloudId = new Map<string, string>(); // task_id → cloud event UUID
 
 export interface TelemetryConfig {
   secrets: Record<string, string>;
@@ -66,6 +80,17 @@ export async function init(config: TelemetryConfig): Promise<void> {
     log('SQLite event store initialized');
   } catch (err) {
     log(`SQLite init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Cloud relay setup (if cloud URL is configured)
+  const cloudUrl = config.secrets.NANOCLAW_CLOUD_URL || process.env.NANOCLAW_CLOUD_URL;
+  const eventSecret = config.secrets.NANOCLAW_EVENT_SECRET || process.env.NANOCLAW_EVENT_SECRET;
+  const tenantId = process.env.TENANT_ID;
+  if (cloudUrl && eventSecret && tenantId && db) {
+    cloudRelay.init({ db, cloudUrl, eventSecret, tenantId });
+    log('Cloud relay initialized');
+  } else {
+    log('Cloud relay skipped: missing NANOCLAW_CLOUD_URL, NANOCLAW_EVENT_SECRET, or TENANT_ID');
   }
 
   // OTEL/Langfuse setup
@@ -130,6 +155,31 @@ export function onQueryStart(prompt: string, sessionId?: string): void {
   }
 
   storeEvent('query_start', { prompt }, sessionId);
+
+  currentTraceId = randomUUID();
+  currentRootEventId = currentTraceId;
+  seqCounter = 0;
+  currentPrompt = prompt;
+  toolUseIdToCloudId.clear();
+  taskIdToCloudId.clear();
+
+  const queryStartEvent: AgentEvent = {
+    id: currentTraceId,
+    tenant_id: process.env.TENANT_ID || '',
+    trace_id: currentTraceId,
+    parent_event_id: null,
+    seq: seqCounter++,
+    event_type: 'query_start',
+    status: 'pending',
+    agent_name: process.env.ASSISTANT_NAME || 'unknown',
+    channel: agentChannel,
+    data: { type: 'query_start', prompt, channel: agentChannel },
+    tokens_used: null,
+    cost_usd: null,
+    duration_ms: null,
+    client_ts: new Date().toISOString(),
+  };
+  cloudRelay.push(queryStartEvent);
 }
 
 /**
@@ -191,11 +241,16 @@ export async function shutdown(): Promise<void> {
       await otelSdk.shutdown();
     } catch {}
   }
+  await cloudRelay.shutdown();
   if (db) {
     try {
       db.close();
     } catch {}
   }
+}
+
+export function setChannel(channel: string): void {
+  agentChannel = channel;
 }
 
 // ─── Message Handlers ─────────────────────────────────────────
@@ -222,6 +277,27 @@ function handleAssistant(message: Record<string, unknown>): void {
   if (!content) return;
 
   for (const block of content) {
+    if (block.type === 'thinking' && (block.thinking || block.text)) {
+      const thinkingText = (block.thinking || block.text) as string;
+      const reasoningEvent: AgentEvent = {
+        id: randomUUID(),
+        tenant_id: process.env.TENANT_ID || '',
+        trace_id: currentTraceId || '',
+        parent_event_id: currentRootEventId,
+        seq: seqCounter++,
+        event_type: 'reasoning',
+        status: 'complete',
+        agent_name: process.env.ASSISTANT_NAME || 'unknown',
+        channel: agentChannel,
+        data: { type: 'reasoning', text: thinkingText.slice(0, 65000) },
+        tokens_used: null,
+        cost_usd: null,
+        duration_ms: null,
+        client_ts: new Date().toISOString(),
+      };
+      cloudRelay.push(reasoningEvent);
+    }
+
     if (block.type === 'text' && block.text) {
       lastAssistantText = block.text as string;
     }
@@ -250,6 +326,26 @@ function handleAssistant(message: Record<string, unknown>): void {
         querySessionId,
         toolName,
       );
+
+      const toolCloudId = randomUUID();
+      toolUseIdToCloudId.set(toolUseId, toolCloudId);
+      const toolCloudEvent: AgentEvent = {
+        id: toolCloudId,
+        tenant_id: process.env.TENANT_ID || '',
+        trace_id: currentTraceId || '',
+        parent_event_id: currentRootEventId,
+        seq: seqCounter++,
+        event_type: 'tool_call',
+        status: 'pending',
+        agent_name: process.env.ASSISTANT_NAME || 'unknown',
+        channel: agentChannel,
+        data: { type: 'tool_call', tool_name: toolName, tool_input: toolInput, tool_use_id: toolUseId },
+        tokens_used: null,
+        cost_usd: null,
+        duration_ms: null,
+        client_ts: new Date().toISOString(),
+      };
+      cloudRelay.push(toolCloudEvent);
     }
   }
 }
@@ -276,6 +372,34 @@ function handleToolResult(message: Record<string, unknown>): void {
     { parent_tool_use_id: parentId, result: message.tool_use_result },
     querySessionId,
   );
+
+  const resultStr = typeof message.tool_use_result === 'string'
+    ? message.tool_use_result
+    : JSON.stringify(message.tool_use_result);
+  const toolCallCloudId = parentId ? toolUseIdToCloudId.get(parentId) : null;
+  const toolResultEvent: AgentEvent = {
+    id: randomUUID(),
+    tenant_id: process.env.TENANT_ID || '',
+    trace_id: currentTraceId || '',
+    parent_event_id: toolCallCloudId || currentRootEventId,
+    seq: seqCounter++,
+    event_type: 'tool_result',
+    status: 'complete',
+    agent_name: process.env.ASSISTANT_NAME || 'unknown',
+    channel: agentChannel,
+    data: {
+      type: 'tool_result',
+      tool_use_id: parentId || '',
+      output: resultStr.slice(0, 65000),
+      is_error: false,
+      ...(resultStr.length > 65000 ? { truncated: true } : {}),
+    },
+    tokens_used: null,
+    cost_usd: null,
+    duration_ms: null,
+    client_ts: new Date().toISOString(),
+  };
+  cloudRelay.push(toolResultEvent);
 }
 
 function handleSubagentStart(message: Record<string, unknown>): void {
@@ -298,6 +422,26 @@ function handleSubagentStart(message: Record<string, unknown>): void {
     { task_id: taskId, description, task_type: message.task_type },
     querySessionId,
   );
+
+  const subStartCloudId = randomUUID();
+  taskIdToCloudId.set(taskId, subStartCloudId);
+  const subStartEvent: AgentEvent = {
+    id: subStartCloudId,
+    tenant_id: process.env.TENANT_ID || '',
+    trace_id: currentTraceId || '',
+    parent_event_id: currentRootEventId,
+    seq: seqCounter++,
+    event_type: 'subagent_start',
+    status: 'pending',
+    agent_name: process.env.ASSISTANT_NAME || 'unknown',
+    channel: agentChannel,
+    data: { type: 'subagent_start', task_id: taskId, task_description: description },
+    tokens_used: null,
+    cost_usd: null,
+    duration_ms: null,
+    client_ts: new Date().toISOString(),
+  };
+  cloudRelay.push(subStartEvent);
 }
 
 function handleSubagentProgress(message: Record<string, unknown>): void {
@@ -339,6 +483,25 @@ function handleSubagentEnd(message: Record<string, unknown>): void {
     { task_id: taskId, status, summary, usage },
     querySessionId,
   );
+
+  const subStartCloudIdForEnd = taskIdToCloudId.get(taskId);
+  const subEndEvent: AgentEvent = {
+    id: randomUUID(),
+    tenant_id: process.env.TENANT_ID || '',
+    trace_id: currentTraceId || '',
+    parent_event_id: subStartCloudIdForEnd || currentRootEventId,
+    seq: seqCounter++,
+    event_type: 'subagent_end',
+    status: status === 'completed' ? 'complete' : 'error',
+    agent_name: process.env.ASSISTANT_NAME || 'unknown',
+    channel: agentChannel,
+    data: { type: 'subagent_end', task_id: taskId, status: status as 'completed' | 'failed' | 'stopped' },
+    tokens_used: usage?.total_tokens || null,
+    cost_usd: null,
+    duration_ms: usage?.duration_ms || null,
+    client_ts: new Date().toISOString(),
+  };
+  cloudRelay.push(subEndEvent);
 }
 
 function handleResult(message: Record<string, unknown>): void {
@@ -393,6 +556,48 @@ function handleResult(message: Record<string, unknown>): void {
     totalCost,
     durationMs,
   );
+
+  const isError = (message.subtype as string)?.startsWith('error');
+  const resultEvent: AgentEvent = {
+    id: randomUUID(),
+    tenant_id: process.env.TENANT_ID || '',
+    trace_id: currentTraceId || '',
+    parent_event_id: currentRootEventId,
+    seq: seqCounter++,
+    event_type: isError ? 'error' : 'response',
+    status: isError ? 'error' : 'complete',
+    agent_name: process.env.ASSISTANT_NAME || 'unknown',
+    channel: agentChannel,
+    data: isError
+      ? { type: 'error', error_type: message.subtype as string, message: finalText || 'Unknown error' }
+      : { type: 'response', text: finalText || '', is_error: false },
+    tokens_used: usage ? (usage.input_tokens || 0) + (usage.output_tokens || 0) : null,
+    cost_usd: totalCost || null,
+    duration_ms: durationMs || null,
+    client_ts: new Date().toISOString(),
+  };
+  cloudRelay.push(resultEvent);
+
+  // Update the query_start event status to complete (preserving original prompt)
+  if (currentRootEventId) {
+    const completeEvent: AgentEvent = {
+      id: currentRootEventId,
+      tenant_id: process.env.TENANT_ID || '',
+      trace_id: currentTraceId || '',
+      parent_event_id: null,
+      seq: 0,
+      event_type: 'query_start',
+      status: isError ? 'error' : 'complete',
+      agent_name: process.env.ASSISTANT_NAME || 'unknown',
+      channel: agentChannel,
+      data: { type: 'query_start', prompt: currentPrompt, channel: agentChannel },
+      tokens_used: usage ? (usage.input_tokens || 0) + (usage.output_tokens || 0) : null,
+      cost_usd: totalCost || null,
+      duration_ms: durationMs || null,
+      client_ts: new Date().toISOString(),
+    };
+    cloudRelay.push(completeEvent);
+  }
 }
 
 // ─── Internal Helpers ─────────────────────────────────────────
