@@ -581,6 +581,13 @@ async function main(): Promise<void> {
       assistantName: containerInput.assistantName,
       dbPath: path.join(process.env.NANOCLAW_WORKSPACE_GROUP || '/workspace/group', 'agent_events.db'),
     });
+
+    // Set channel for observability events
+    const channel = process.env.TELEGRAM_BOT_TOKEN ? 'telegram'
+      : process.env.SLACK_BOT_TOKEN ? 'slack'
+      : process.env.DISCORD_BOT_TOKEN ? 'discord'
+      : 'unknown';
+    telemetry.setChannel(channel);
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
