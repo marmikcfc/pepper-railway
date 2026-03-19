@@ -269,7 +269,7 @@ function collectMcpEnvVars(): string[] {
  * Env var prefixes that are ALWAYS forwarded to agents, even if they
  * match a blocked prefix. Add new integration prefixes here.
  */
-const INCLUDED_ENV_PREFIXES = ['LANGFUSE_', 'OPENROUTER_'];
+const INCLUDED_ENV_PREFIXES = ['LANGFUSE_', 'OPENROUTER_', 'NANOCLAW_'];
 
 /**
  * Env var prefixes that should NOT be forwarded to agents.
