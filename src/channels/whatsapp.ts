@@ -52,6 +52,38 @@ export class WhatsAppChannel implements Channel {
     this.opts = opts;
   }
 
+  private async pushToCloud(payload: Record<string, string>): Promise<void> {
+    const cloudUrl = process.env.NANOCLAW_CLOUD_URL;
+    const eventSecret = process.env.NANOCLAW_EVENT_SECRET;
+    const tenantId = process.env.TENANT_ID;
+
+    if (!cloudUrl || !eventSecret || !tenantId) {
+      logger.debug('Cloud relay not configured, skipping pairing push');
+      return;
+    }
+
+    const { createHmac } = await import('crypto');
+    const body = JSON.stringify(payload);
+    const signature = createHmac('sha256', eventSecret).update(body).digest('hex');
+
+    try {
+      const resp = await fetch(`${cloudUrl}/api/pairing/${tenantId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Event-Signature': signature,
+        },
+        body,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status }, 'Failed to push pairing status to cloud');
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to push pairing status to cloud');
+    }
+  }
+
   async connect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.connectInternal(resolve).catch(reject);
@@ -94,6 +126,8 @@ export class WhatsAppChannel implements Channel {
             { code },
             `WhatsApp pairing code: ${code} — enter this in WhatsApp > Linked Devices > Link with phone number`,
           );
+          // Push pairing code to cloud dashboard
+          this.pushToCloud({ pairingCode: code });
         } catch (err) {
           logger.error({ err }, 'Failed to request pairing code');
         }
@@ -170,6 +204,8 @@ export class WhatsAppChannel implements Channel {
       } else if (connection === 'open') {
         this.connected = true;
         logger.info('Connected to WhatsApp');
+        // Notify cloud dashboard of successful connection
+        this.pushToCloud({ status: 'connected' });
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
         this.sock.sendPresenceUpdate('available').catch((err) => {
