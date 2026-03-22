@@ -46,6 +46,7 @@ export class WhatsAppChannel implements Channel {
   private flushing = false;
   private groupSyncTimerStarted = false;
   private pairingRequested = false;
+  private hasBeenConnected = false;
 
   private opts: WhatsAppChannelOpts;
 
@@ -171,6 +172,23 @@ export class WhatsAppChannel implements Channel {
           'Connection closed',
         );
 
+        // During initial pairing (code requested, not yet connected),
+        // don't auto-reconnect — stop and wait for user to click "Get New Code".
+        // This prevents burning through codes and hitting WhatsApp rate limits.
+        if (IS_RAILWAY && this.pairingRequested && !this.hasBeenConnected) {
+          logger.info('Pairing code expired or rejected. Waiting for user to request a new code.');
+          this.pushToCloud({ status: 'code_expired' });
+          if (reason === DisconnectReason.loggedOut) {
+            // Clear stale auth from failed pairing attempt
+            const authDir = path.join(STORE_DIR, 'auth');
+            try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+            this.pairingRequested = false;
+          }
+          onFirstOpen?.();
+          onFirstOpen = undefined;
+          return;
+        }
+
         if (shouldReconnect) {
           logger.info('Reconnecting...');
           this.connectInternal().catch((err) => {
@@ -183,19 +201,18 @@ export class WhatsAppChannel implements Channel {
           });
         } else {
           if (IS_RAILWAY && process.env.WHATSAPP_PHONE) {
-            // Clear stale auth and reconnect with a fresh pairing code
+            // Clear stale auth — user must click "Get New Code" to retry
             logger.info(
-              'Logged out on Railway. Clearing auth state and requesting new pairing code...',
+              'Logged out on Railway. Clearing auth state.',
             );
             this.pairingRequested = false;
             const authDir = path.join(STORE_DIR, 'auth');
             try {
               fs.rmSync(authDir, { recursive: true, force: true });
             } catch {}
-            this.connectInternal(onFirstOpen).catch((err) => {
-              logger.error({ err }, 'Failed to reconnect after logout');
-              onFirstOpen?.();
-            });
+            this.pushToCloud({ status: 'code_expired' });
+            onFirstOpen?.();
+            onFirstOpen = undefined;
           } else if (IS_RAILWAY) {
             logger.info('Logged out. Set WHATSAPP_PHONE to re-authenticate.');
             onFirstOpen?.();
@@ -206,6 +223,7 @@ export class WhatsAppChannel implements Channel {
         }
       } else if (connection === 'open') {
         this.connected = true;
+        this.hasBeenConnected = true;
         logger.info('Connected to WhatsApp');
         // Notify cloud dashboard of successful connection
         this.pushToCloud({ status: 'connected' });
@@ -385,6 +403,7 @@ export class WhatsAppChannel implements Channel {
     }
     logger.info('Refreshing WhatsApp pairing code...');
     this.pairingRequested = false;
+    this.hasBeenConnected = false;
     await this.disconnect();
     await this.connect();
   }
