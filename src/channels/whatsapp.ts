@@ -47,6 +47,7 @@ export class WhatsAppChannel implements Channel {
   private groupSyncTimerStarted = false;
   private pairingRequested = false;
   private hasBeenConnected = false;
+  private intentionalDisconnect = false;
 
   private opts: WhatsAppChannelOpts;
 
@@ -96,7 +97,16 @@ export class WhatsAppChannel implements Channel {
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    let { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+    // On Railway, if creds exist but aren't registered (leftover from failed pairing),
+    // clear them to avoid a passive login attempt that will 401 immediately.
+    if (IS_RAILWAY && process.env.WHATSAPP_PHONE && !state.creds.registered && state.creds.me) {
+      logger.info('Clearing stale auth from previous failed pairing attempt');
+      try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+      fs.mkdirSync(authDir, { recursive: true });
+      ({ state, saveCreds } = await useMultiFileAuthState(authDir));
+    }
 
     const { version } = await fetchLatestWaWebVersion({}).catch((err) => {
       logger.warn(
@@ -159,6 +169,14 @@ export class WhatsAppChannel implements Channel {
 
       if (connection === 'close') {
         this.connected = false;
+
+        // If disconnect was intentional (e.g. refreshPairing), skip all reconnect logic
+        if (this.intentionalDisconnect) {
+          this.intentionalDisconnect = false;
+          logger.info('Intentional disconnect — skipping reconnect');
+          return;
+        }
+
         const reason = (
           lastDisconnect?.error as { output?: { statusCode?: number } }
         )?.output?.statusCode;
@@ -404,7 +422,11 @@ export class WhatsAppChannel implements Channel {
     logger.info('Refreshing WhatsApp pairing code...');
     this.pairingRequested = false;
     this.hasBeenConnected = false;
+    this.intentionalDisconnect = true;
     await this.disconnect();
+    // Clear stale auth to avoid passive login → 401 cycle
+    const authDir = path.join(STORE_DIR, 'auth');
+    try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
     await this.connect();
   }
 
