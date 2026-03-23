@@ -69,8 +69,10 @@ export class WhatsAppChannel implements Channel {
     const body = JSON.stringify(payload);
     const signature = createHmac('sha256', eventSecret).update(body).digest('hex');
 
+    const url = `${cloudUrl}/api/pairing/${tenantId}`;
+    logger.info({ url, payload }, 'pushToCloud: sending pairing event');
     try {
-      const resp = await fetch(`${cloudUrl}/api/pairing/${tenantId}`, {
+      const resp = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -79,11 +81,12 @@ export class WhatsAppChannel implements Channel {
         body,
         signal: AbortSignal.timeout(10000),
       });
+      logger.info({ status: resp.status, ok: resp.ok }, 'pushToCloud: response received');
       if (!resp.ok) {
         logger.warn({ status: resp.status }, 'Failed to push pairing status to cloud');
       }
     } catch (err) {
-      logger.error({ err }, 'Failed to push pairing status to cloud');
+      logger.error({ err }, 'pushToCloud: request failed');
     }
   }
 
