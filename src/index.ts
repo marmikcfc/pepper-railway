@@ -67,6 +67,7 @@ import {
 } from './sender-allowlist.js';
 import { syncMcpOnStartup } from './mcp-installer.js';
 import { syncSkillsOnStartup } from './skill-installer.js';
+import { syncIntegrationsOnStartup } from './integrations/activator.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -538,6 +539,9 @@ async function main(): Promise<void> {
 
   // Sync persistent MCP servers (rebuild .mcp.json from lock file)
   await syncMcpOnStartup();
+
+  // Sync active integrations (register MCP servers from integrations.json)
+  syncIntegrationsOnStartup();
 
   // Start credential proxy (containers route API calls through this)
   // On Railway, secrets are passed via stdin instead, so the proxy is a no-op guard.
