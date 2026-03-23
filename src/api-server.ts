@@ -1,8 +1,10 @@
 import http from 'http';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 
 import { logger } from './logger.js';
 import { Channel } from './types.js';
+import { storeMessage, getAllRegisteredGroups } from './db.js';
+import { enableIntegration, disableIntegration } from './integrations/activator.js';
 
 let connectedChannels: Channel[] = [];
 const startTime = Date.now();
@@ -28,7 +30,7 @@ function json(res: http.ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
-const MAX_BODY_BYTES = 64 * 1024; // 64KB — generous for command payloads
+const MAX_BODY_BYTES = 512 * 1024; // 512KB — webhook payloads can be large
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -78,8 +80,56 @@ async function handleRefreshPairing(_body: unknown, res: http.ServerResponse): P
   json(res, 200, { success: true, message: 'Pairing refresh initiated' });
 }
 
+async function handleEnableIntegration(body: unknown, res: http.ServerResponse): Promise<void> {
+  const { integrationId } = body as { integrationId: string };
+  if (!integrationId) { json(res, 400, { error: 'integrationId required' }); return; }
+  enableIntegration(integrationId);
+  json(res, 200, { success: true });
+}
+
+async function handleDisableIntegration(body: unknown, res: http.ServerResponse): Promise<void> {
+  const { integrationId } = body as { integrationId: string };
+  if (!integrationId) { json(res, 400, { error: 'integrationId required' }); return; }
+  disableIntegration(integrationId);
+  json(res, 200, { success: true });
+}
+
+async function handleWebhookEvent(body: unknown, res: http.ServerResponse): Promise<void> {
+  const { integrationId, eventType, payload } = body as {
+    integrationId: string;
+    eventType: string;
+    payload: unknown;
+  };
+
+  // Find main group to deliver webhook message to
+  const groups = getAllRegisteredGroups();
+  const mainGroup = Object.entries(groups).find(([, g]) => g.isMain);
+  if (!mainGroup) {
+    logger.warn({ integrationId }, 'Webhook received but no main group registered');
+    json(res, 200, { ok: true }); // don't error — agent may not have a group yet
+    return;
+  }
+
+  const [mainJid] = mainGroup;
+  storeMessage({
+    id: randomUUID(),
+    chat_jid: mainJid,
+    sender: `webhook:${integrationId}`,
+    sender_name: integrationId,
+    content: `[${integrationId} webhook: ${eventType}]\n\n${JSON.stringify(payload, null, 2)}`,
+    timestamp: new Date().toISOString(),
+    is_from_me: false,
+    is_bot_message: false,
+  });
+
+  json(res, 200, { ok: true });
+}
+
 const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse) => Promise<void>> = {
   'refresh-pairing': handleRefreshPairing,
+  'enable-integration': handleEnableIntegration,
+  'disable-integration': handleDisableIntegration,
+  'webhook-event': handleWebhookEvent,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
