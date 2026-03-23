@@ -335,42 +335,38 @@ export class WhatsAppChannel implements Channel {
           isGroup,
         );
 
-        // Only deliver full message for registered groups
-        const groups = this.opts.registeredGroups();
-        if (groups[chatJid]) {
-          const content =
-            normalized.conversation ||
-            normalized.extendedTextMessage?.text ||
-            normalized.imageMessage?.caption ||
-            normalized.videoMessage?.caption ||
-            '';
+        const content =
+          normalized.conversation ||
+          normalized.extendedTextMessage?.text ||
+          normalized.imageMessage?.caption ||
+          normalized.videoMessage?.caption ||
+          '';
 
-          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          if (!content) continue;
+        // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+        if (!content) continue;
 
-          const sender = msg.key.participant || msg.key.remoteJid || '';
-          const senderName = msg.pushName || sender.split('@')[0];
+        const sender = msg.key.participant || msg.key.remoteJid || '';
+        const senderName = msg.pushName || sender.split('@')[0];
 
-          const fromMe = msg.key.fromMe || false;
-          // Detect bot messages: with own number, fromMe is reliable
-          // since only the bot sends from that number.
-          // With shared number, bot messages carry the assistant name prefix
-          // (even in DMs/self-chat) so we check for that.
-          const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
+        const fromMe = msg.key.fromMe || false;
+        // Detect bot messages: with own number, fromMe is reliable
+        // since only the bot sends from that number.
+        // With shared number, bot messages carry the assistant name prefix
+        // (even in DMs/self-chat) so we check for that.
+        const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
+          ? fromMe
+          : content.startsWith(`${ASSISTANT_NAME}:`);
 
-          this.opts.onMessage(chatJid, {
-            id: msg.key.id || '',
-            chat_jid: chatJid,
-            sender,
-            sender_name: senderName,
-            content,
-            timestamp,
-            is_from_me: fromMe,
-            is_bot_message: isBotMessage,
-          });
-        }
+        this.opts.onMessage(chatJid, {
+          id: msg.key.id || '',
+          chat_jid: chatJid,
+          sender,
+          sender_name: senderName,
+          content,
+          timestamp,
+          is_from_me: fromMe,
+          is_bot_message: isBotMessage,
+        });
       }
     });
   }
