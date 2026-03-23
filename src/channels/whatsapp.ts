@@ -198,20 +198,30 @@ export class WhatsAppChannel implements Channel {
         );
 
         // During initial pairing (code requested, not yet connected),
-        // don't auto-reconnect — stop and wait for user to click "Get New Code".
-        // This prevents burning through codes and hitting WhatsApp rate limits.
+        // check whether pairing actually succeeded before giving up.
+        // WhatsApp sends a 515 "restart required" after successful pairing —
+        // this is normal and we must reconnect to complete the handshake.
         if (IS_RAILWAY && this.pairingRequested && !this.hasBeenConnected) {
-          logger.info('Pairing code expired or rejected. Waiting for user to request a new code.');
-          this.pushToCloud({ status: 'code_expired' });
-          if (reason === DisconnectReason.loggedOut) {
-            // Clear stale auth from failed pairing attempt
-            const authDir = path.join(STORE_DIR, 'auth');
-            try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+          if (state.creds.registered || state.creds.me) {
+            // Pairing succeeded — the 515 is a normal post-pairing restart.
+            // Reset flag and fall through to reconnect logic below.
+            logger.info('Pairing succeeded (post-pairing restart). Reconnecting...');
             this.pairingRequested = false;
+          } else {
+            // Genuine failure — stop and wait for user to click "Get New Code".
+            // This prevents burning through codes and hitting WhatsApp rate limits.
+            logger.info('Pairing code expired or rejected. Waiting for user to request a new code.');
+            this.pushToCloud({ status: 'code_expired' });
+            if (reason === DisconnectReason.loggedOut) {
+              // Clear stale auth from failed pairing attempt
+              const authDir = path.join(STORE_DIR, 'auth');
+              try { fs.rmSync(authDir, { recursive: true, force: true }); } catch {}
+              this.pairingRequested = false;
+            }
+            onFirstOpen?.();
+            onFirstOpen = undefined;
+            return;
           }
-          onFirstOpen?.();
-          onFirstOpen = undefined;
-          return;
         }
 
         if (shouldReconnect) {
