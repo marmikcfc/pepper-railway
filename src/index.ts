@@ -718,6 +718,8 @@ async function main(): Promise<void> {
   setAllowedNumberFns(addAllowedWhatsAppNumber, removeAllowedWhatsAppNumber);
 
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Channels connect concurrently so a slow channel (e.g. WhatsApp pairing) doesn't block others.
+  const connectableChannels: Channel[] = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -728,14 +730,53 @@ async function main(): Promise<void> {
       );
       continue;
     }
+    connectableChannels.push(channel);
     channels.push(channel);
     setChannels(channels);  // Update API server immediately so commands work during connect()
-    await channel.connect();
   }
-  if (channels.length === 0) {
-    logger.fatal('No channels connected');
+  if (connectableChannels.length === 0) {
+    logger.fatal('No channels configured');
     process.exit(1);
   }
+
+  // Start subsystems immediately — they tolerate an empty channel list
+  // via findChannel() null checks, and pick up channels as they connect.
+  startSchedulerLoop({
+    registeredGroups: () => registeredGroups,
+    getSessions: () => sessions,
+    queue,
+    onProcess: (groupJid, proc, containerName, groupFolder) =>
+      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    sendMessage: async (jid, rawText) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel owns JID, cannot send message');
+        return;
+      }
+      const text = formatOutbound(rawText);
+      if (text) await channel.sendMessage(jid, text);
+    },
+  });
+  startIpcWatcher({
+    sendMessage: (jid, text) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      return channel.sendMessage(jid, text);
+    },
+    registeredGroups: () => registeredGroups,
+    registerGroup,
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups && ch.isConnected())
+          .map((ch) => ch.syncGroups!(force)),
+      );
+    },
+    getAvailableGroups,
+    writeGroupsSnapshot: (gf, ag, rj) =>
+      writeGroupsSnapshot(gf, ag, rj),
+  });
+  queue.setProcessMessagesFn(processGroupMessages);
 
   // Fetch allowed WhatsApp numbers from cloud (personal number mode whitelist)
   fetchAllowedNumbers().catch((err) =>
@@ -782,94 +823,91 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-register any chats (groups or DMs) the bot is a member of that
-  // aren't already registered. Runs on every startup so newly-added
-  // channels (Slack, Telegram, Discord, WhatsApp) are picked up automatically.
-  {
-    await Promise.all(
-      channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(false)),
-    );
-    const allChats = getAllChats();
-    for (const chat of allChats) {
-      if (!registeredGroups[chat.jid] && chat.name) {
-        let prefix: string;
-        if (chat.jid.startsWith('slack:')) prefix = 'slack';
-        else if (chat.jid.startsWith('tg:')) prefix = 'tg';
-        else if (chat.jid.startsWith('dc:')) prefix = 'dc';
-        else if (
-          chat.jid.includes('@g.us') ||
-          chat.jid.includes('@s.whatsapp.net')
-        )
-          prefix = 'wa';
-        else continue; // skip unknown JID formats (gmail, etc.)
+  // Connect all channels concurrently. Start the message loop as soon as
+  // the first channel connects so fast channels aren't blocked by slow ones.
+  let subsystemsStarted = false;
+  const startSubsystemsOnce = () => {
+    if (subsystemsStarted) return;
+    subsystemsStarted = true;
 
-        const safeName = chat.name
-          .replace(/[^a-zA-Z0-9-]/g, '-')
-          .toLowerCase()
-          .slice(0, 50);
-        const folderName = `${prefix}_${safeName}`;
-        const chatIsDM = chat.is_group === 1 ? false : inferIsDM(chat.jid);
-        registerGroup(chat.jid, {
-          name: chat.name,
-          folder: folderName,
-          trigger: `@${ASSISTANT_NAME}`,
-          added_at: new Date().toISOString(),
-          requiresTrigger: !chatIsDM,
-          isDM: chatIsDM || undefined,
-        });
-        logger.info(
-          { jid: chat.jid, name: chat.name, folder: folderName, isDM: chatIsDM },
-          'Auto-registered chat',
-        );
-      }
-    }
-  }
-
-  // Final setChannels ensures the API server sees all connected channels
-  setChannels(channels);
-
-  // Start subsystems (independently of connection handler)
-  startSchedulerLoop({
-    registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
-    queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
-        return;
-      }
-      const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
-    },
-  });
-  startIpcWatcher({
-    sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
-    },
-    registeredGroups: () => registeredGroups,
-    registerGroup,
-    syncGroups: async (force: boolean) => {
+    // Sync groups from connected channels and auto-register chats
+    const syncAndRegister = async () => {
       await Promise.all(
         channels
-          .filter((ch) => ch.syncGroups)
-          .map((ch) => ch.syncGroups!(force)),
+          .filter((ch) => ch.syncGroups && ch.isConnected())
+          .map((ch) => ch.syncGroups!(false)),
       );
-    },
-    getAvailableGroups,
-    writeGroupsSnapshot: (gf, ag, rj) =>
-      writeGroupsSnapshot(gf, ag, rj),
-  });
-  queue.setProcessMessagesFn(processGroupMessages);
-  recoverPendingMessages();
-  startMessageLoop().catch((err) => {
-    logger.fatal({ err }, 'Message loop crashed unexpectedly');
+      const allChats = getAllChats();
+      for (const chat of allChats) {
+        if (!registeredGroups[chat.jid] && chat.name) {
+          let prefix: string;
+          if (chat.jid.startsWith('slack:')) prefix = 'slack';
+          else if (chat.jid.startsWith('tg:')) prefix = 'tg';
+          else if (chat.jid.startsWith('dc:')) prefix = 'dc';
+          else if (
+            chat.jid.includes('@g.us') ||
+            chat.jid.includes('@s.whatsapp.net')
+          )
+            prefix = 'wa';
+          else continue;
+
+          const safeName = chat.name
+            .replace(/[^a-zA-Z0-9-]/g, '-')
+            .toLowerCase()
+            .slice(0, 50);
+          const folderName = `${prefix}_${safeName}`;
+          const chatIsDM = chat.is_group === 1 ? false : inferIsDM(chat.jid);
+          registerGroup(chat.jid, {
+            name: chat.name,
+            folder: folderName,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: !chatIsDM,
+            isDM: chatIsDM || undefined,
+          });
+          logger.info(
+            { jid: chat.jid, name: chat.name, folder: folderName, isDM: chatIsDM },
+            'Auto-registered chat',
+          );
+        }
+      }
+    };
+
+    syncAndRegister().catch((err) =>
+      logger.warn({ err }, 'Initial group sync failed'),
+    );
+
+    recoverPendingMessages();
+    startMessageLoop().catch((err) => {
+      logger.fatal({ err }, 'Message loop crashed unexpectedly');
+      process.exit(1);
+    });
+  };
+
+  await Promise.allSettled(
+    connectableChannels.map(async (channel) => {
+      try {
+        await channel.connect();
+        logger.info({ channel: channel.constructor.name }, 'Channel connected');
+        startSubsystemsOnce();
+
+        // Sync groups for this newly-connected channel
+        if (channel.syncGroups) {
+          channel.syncGroups(false).catch((err) =>
+            logger.warn({ err }, 'Post-connect group sync failed'),
+          );
+        }
+      } catch (err) {
+        logger.error({ err, channel: channel.constructor.name }, 'Channel failed to connect');
+      }
+    }),
+  );
+
+  // If no channels connected at all, exit
+  if (!subsystemsStarted) {
+    logger.fatal('No channels connected');
     process.exit(1);
-  });
+  }
 }
 
 // Guard: only run when executed directly, not when imported by tests
