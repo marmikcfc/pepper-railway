@@ -38,8 +38,8 @@ export interface RegisteredGroup {
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean; // Default: true for groups, false for solo chats
-  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  requiresTrigger?: boolean; // Default: true for groups, false for DMs
+  isDM?: boolean; // True for direct messages, false for group chats
 }
 
 export interface NewMessage {
@@ -93,6 +93,7 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: re-request pairing code (WhatsApp only).
   refreshPairing?(): Promise<void>;
+  getConnectedPhone?(): string | undefined;
 }
 
 // Callback type that channels use to deliver inbound messages
