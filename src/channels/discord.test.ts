@@ -277,7 +277,7 @@ describe('DiscordChannel', () => {
       );
     });
 
-    it('only emits metadata for unregistered channels', async () => {
+    it('delivers messages from unregistered channels for auto-registration', async () => {
       const opts = createTestOpts();
       const channel = new DiscordChannel('test-token', opts);
       await channel.connect();
@@ -296,7 +296,10 @@ describe('DiscordChannel', () => {
         'discord',
         true,
       );
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'dc:9999999999999999',
+        expect.objectContaining({ chat_jid: 'dc:9999999999999999', content: 'Unknown channel' }),
+      );
     });
 
     it('ignores bot messages', async () => {

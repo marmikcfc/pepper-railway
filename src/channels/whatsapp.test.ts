@@ -374,7 +374,7 @@ describe('WhatsAppChannel', () => {
       );
     });
 
-    it('only emits metadata for unregistered groups', async () => {
+    it('delivers messages from unregistered groups for auto-registration', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
@@ -401,7 +401,10 @@ describe('WhatsAppChannel', () => {
         'whatsapp',
         true,
       );
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'unregistered@g.us',
+        expect.objectContaining({ chat_jid: 'unregistered@g.us', content: 'Hello' }),
+      );
     });
 
     it('ignores status@broadcast messages', async () => {

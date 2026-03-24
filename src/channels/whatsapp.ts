@@ -348,10 +348,6 @@ export class WhatsAppChannel implements Channel {
         const sender = msg.key.participant || msg.key.remoteJid || '';
         const senderName = msg.pushName || sender.split('@')[0];
 
-        // Only deliver message content for registered chats
-        const group = this.opts.registeredGroups()[chatJid];
-        if (!group) continue;
-
         const fromMe = msg.key.fromMe || false;
         // Detect bot messages: with own number, fromMe is reliable
         // since only the bot sends from that number.

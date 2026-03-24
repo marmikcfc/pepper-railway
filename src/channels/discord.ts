@@ -157,17 +157,7 @@ export class DiscordChannel implements Channel {
         isGroup,
       );
 
-      // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) {
-        logger.debug(
-          { chatJid, chatName },
-          'Message from unregistered Discord channel',
-        );
-        return;
-      }
-
-      // Deliver message — startMessageLoop() will pick it up
+      // Deliver message — onMessage handles auto-registration for unregistered chats
       this.opts.onMessage(chatJid, {
         id: msgId,
         chat_jid: chatJid,
