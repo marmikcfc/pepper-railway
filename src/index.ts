@@ -1,7 +1,9 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 import {
+  ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   GROUPS_DIR,
@@ -71,7 +73,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setChannels, startApiServer } from './api-server.js';
+import { setAllowedNumberFns, setChannels, startApiServer } from './api-server.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -81,6 +83,45 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+
+let allowedWhatsAppNumbers: Set<string> = new Set();
+
+async function fetchAllowedNumbers(): Promise<void> {
+  const cloudUrl = process.env.NANOCLAW_CLOUD_URL;
+  const tenantId = process.env.TENANT_ID;
+  const secret = process.env.NANOCLAW_EVENT_SECRET;
+  if (!cloudUrl || !tenantId || !secret) return;
+
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(tenantId)
+    .digest('hex');
+
+  try {
+    const res = await fetch(`${cloudUrl}/api/provision/${tenantId}/allowed-numbers`, {
+      headers: { 'x-signature': signature },
+    });
+    if (res.ok) {
+      const data = await res.json() as { numbers?: string[] };
+      allowedWhatsAppNumbers = new Set(data.numbers || []);
+      logger.info({ count: allowedWhatsAppNumbers.size }, 'Loaded allowed WhatsApp numbers');
+    } else {
+      logger.warn({ status: res.status }, 'Failed to fetch allowed numbers, retrying in 30s');
+      setTimeout(fetchAllowedNumbers, 30000);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch allowed numbers, retrying in 30s');
+    setTimeout(fetchAllowedNumbers, 30000);
+  }
+}
+
+export function addAllowedWhatsAppNumber(phone: string): void {
+  allowedWhatsAppNumbers.add(phone);
+}
+
+export function removeAllowedWhatsAppNumber(phone: string): void {
+  allowedWhatsAppNumbers.delete(phone);
+}
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -171,6 +212,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const isDM = group.isDM === true;
+
+  // WhatsApp personal number mode: check whitelist for DMs
+  if (isDM && !ASSISTANT_HAS_OWN_NUMBER && chatJid.endsWith('@s.whatsapp.net')) {
+    const phone = chatJid.replace('@s.whatsapp.net', '');
+    const ownPhone = channel?.getConnectedPhone?.();
+    if (phone !== ownPhone && !allowedWhatsAppNumbers.has(phone)) {
+      return true; // Skip — not in whitelist
+    }
+  }
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
@@ -419,6 +469,16 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const isDM = group.isDM === true;
+
+          // WhatsApp personal number mode: check whitelist for DMs
+          if (isDM && !ASSISTANT_HAS_OWN_NUMBER && chatJid.endsWith('@s.whatsapp.net')) {
+            const phone = chatJid.replace('@s.whatsapp.net', '');
+            const ownPhone = channel?.getConnectedPhone?.();
+            if (phone !== ownPhone && !allowedWhatsAppNumbers.has(phone)) {
+              continue; // Skip — not in whitelist
+            }
+          }
+
           const needsTrigger = !isDM && group.requiresTrigger !== false;
 
           // For non-DM chats, only act on trigger messages.
@@ -659,6 +719,7 @@ async function main(): Promise<void> {
   if (process.env.PORT) {
     startApiServer(Number(process.env.PORT));
   }
+  setAllowedNumberFns(addAllowedWhatsAppNumber, removeAllowedWhatsAppNumber);
 
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   for (const channelName of getRegisteredChannelNames()) {
@@ -679,6 +740,11 @@ async function main(): Promise<void> {
     logger.fatal('No channels connected');
     process.exit(1);
   }
+
+  // Fetch allowed WhatsApp numbers from cloud (personal number mode whitelist)
+  fetchAllowedNumbers().catch((err) =>
+    logger.warn({ err }, 'Failed to fetch allowed WhatsApp numbers on startup'),
+  );
 
   // Migrate existing 'main' folder to prefix_safename format
   {

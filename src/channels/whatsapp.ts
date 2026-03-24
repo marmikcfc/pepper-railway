@@ -405,6 +405,10 @@ export class WhatsAppChannel implements Channel {
     return this.connected;
   }
 
+  getConnectedPhone(): string | undefined {
+    return this.sock?.user?.id?.split(':')[0];
+  }
+
   ownsJid(jid: string): boolean {
     return jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net');
   }

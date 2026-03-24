@@ -4,6 +4,18 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { logger } from './logger.js';
 import { Channel } from './types.js';
 
+// Lazily resolved to avoid circular import at module load time
+let _addAllowedNumber: ((phone: string) => void) | undefined;
+let _removeAllowedNumber: ((phone: string) => void) | undefined;
+
+export function setAllowedNumberFns(
+  add: (phone: string) => void,
+  remove: (phone: string) => void,
+): void {
+  _addAllowedNumber = add;
+  _removeAllowedNumber = remove;
+}
+
 let connectedChannels: Channel[] = [];
 const startTime = Date.now();
 
@@ -78,8 +90,42 @@ async function handleRefreshPairing(_body: unknown, res: http.ServerResponse): P
   json(res, 200, { success: true, message: 'Pairing refresh initiated' });
 }
 
+async function handleAllowNumber(body: unknown, res: http.ServerResponse): Promise<void> {
+  const payload = body as Record<string, unknown>;
+  const phone = payload?.phone;
+  if (typeof phone !== 'string' || !phone) {
+    json(res, 400, { error: 'Missing phone in payload' });
+    return;
+  }
+  if (_addAllowedNumber) {
+    _addAllowedNumber(phone);
+    logger.info({ phone }, 'Added phone to WhatsApp whitelist');
+    json(res, 200, { success: true });
+  } else {
+    json(res, 503, { error: 'Whitelist not yet initialised' });
+  }
+}
+
+async function handleRemoveNumber(body: unknown, res: http.ServerResponse): Promise<void> {
+  const payload = body as Record<string, unknown>;
+  const phone = payload?.phone;
+  if (typeof phone !== 'string' || !phone) {
+    json(res, 400, { error: 'Missing phone in payload' });
+    return;
+  }
+  if (_removeAllowedNumber) {
+    _removeAllowedNumber(phone);
+    logger.info({ phone }, 'Removed phone from WhatsApp whitelist');
+    json(res, 200, { success: true });
+  } else {
+    json(res, 503, { error: 'Whitelist not yet initialised' });
+  }
+}
+
 const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse) => Promise<void>> = {
   'refresh-pairing': handleRefreshPairing,
+  'allow-number': handleAllowNumber,
+  'remove-number': handleRemoveNumber,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
