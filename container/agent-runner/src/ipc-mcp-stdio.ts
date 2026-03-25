@@ -10,6 +10,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import { uploadArtifact } from './artifact-uploader.js';
 
 const IPC_DIR = process.env.NANOCLAW_IPC_DIR || '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -743,6 +744,60 @@ server.tool(
     };
   },
 );
+
+// Artifact upload tool — only available when cloud relay is configured
+const cloudUrl = process.env.NANOCLAW_CLOUD_URL;
+const eventSecret = process.env.NANOCLAW_EVENT_SECRET;
+const tenantId = process.env.TENANT_ID;
+const taskId = process.env.TASK_ID;
+
+if (cloudUrl && eventSecret && tenantId) {
+  server.tool(
+    'upload_artifact',
+    `Upload a file artifact (PDF, image, video, CSV, etc.) to cloud storage so the user can see it in their dashboard or receive it in chat.
+
+The file must already exist on disk. After upload, a "for_review" notification is sent to the dashboard and, if the request came from chat, the file is also delivered back to the chat automatically.
+
+Returns the artifact_id and an ephemeral download URL (valid 60 min).`,
+    {
+      file_path: z.string().describe('Absolute path to the file on disk'),
+      title: z.string().optional().describe('Human-readable title for the artifact (defaults to filename)'),
+      mime_type: z.string().optional().describe('MIME type override (e.g., "application/pdf"). Detected from extension if omitted.'),
+    },
+    async (args) => {
+      if (!fs.existsSync(args.file_path)) {
+        return {
+          content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+          isError: true,
+        };
+      }
+
+      try {
+        const result = await uploadArtifact({
+          filePath: args.file_path,
+          title: args.title,
+          mimeType: args.mime_type,
+          cloudUrl: cloudUrl!,
+          eventSecret: eventSecret!,
+          tenantId: tenantId!,
+          taskId: taskId ?? undefined,
+        });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Artifact uploaded successfully.\nartifact_id: ${result.artifact_id}\ndownload_url: ${result.ephemeral_url}`,
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Upload failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
 
 // Start the stdio transport
 const transport = new StdioServerTransport();
