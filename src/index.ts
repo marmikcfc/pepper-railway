@@ -366,6 +366,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         'Agent response',
       );
       if (text) {
+        // Restore the trace ID captured at the start of this run, right before
+        // sendMessage reads it synchronously. This is safe: JS is single-threaded,
+        // so no webhook can interleave between this set and sendMessage's first line.
+        if (webchatTraceId !== null && channel.ownsJid('admin@nanoclaw')) {
+          (channel as WebchatChannel).currentTraceId = webchatTraceId;
+        }
         await channel.sendMessage(chatJid, text);
         logger.info({ group: group.name, chatJid, textLength: text.length }, 'Response sent to user');
         outputSentToUser = true;
