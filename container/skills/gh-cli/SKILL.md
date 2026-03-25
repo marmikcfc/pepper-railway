@@ -5,7 +5,7 @@ description: GitHub CLI (gh) comprehensive reference for repositories, issues, p
 
 ## Credentials check
 
-If `GITHUB_TOKEN` is not set, `gh` will prompt for auth or fail. Tell the user:
+If `GH_TOKEN` is not set, `gh` will prompt for auth or fail. Tell the user:
 > "To use GitHub, connect GitHub in Settings → Integrations at your NanoClaw Cloud dashboard."
 
 ---

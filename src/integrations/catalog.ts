@@ -15,7 +15,7 @@ export interface Integration {
 export const INTEGRATIONS: Integration[] = [
   {
     id: 'github',
-    envVars: { token: 'GITHUB_TOKEN' },
+    envVars: { token: 'GH_TOKEN' },
     implementation: { cli: { bin: 'gh' } },
     webhook: { signatureHeader: 'X-Hub-Signature-256', signatureEnvVar: 'GITHUB_WEBHOOK_SECRET' },
   },
