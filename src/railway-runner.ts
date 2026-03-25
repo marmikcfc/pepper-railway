@@ -191,6 +191,9 @@ export async function runRailwayAgent(
         hasAuthToken: !!input.secrets.ANTHROPIC_AUTH_TOKEN,
         hasBaseUrl: !!input.secrets.ANTHROPIC_BASE_URL,
         baseUrl: input.secrets.ANTHROPIC_BASE_URL || '(not set)',
+        ghTokenInProcessEnv: !!process.env.GH_TOKEN,
+        ghTokenInSecrets: !!input.secrets.GH_TOKEN,
+        ghTokenLength: input.secrets.GH_TOKEN?.length ?? 0,
       },
       'Passing secrets to agent runner',
     );

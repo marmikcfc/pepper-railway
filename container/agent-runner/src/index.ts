@@ -212,6 +212,9 @@ function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
     ...extraSecretKeys,
   ])].filter(key => !CLI_PASSTHROUGH_VARS.has(key));
 
+  log(`[sanitize-hook] unset list (${allSecretKeys.length} keys): ${allSecretKeys.join(', ')}`);
+  log(`[sanitize-hook] GH_TOKEN in extraSecretKeys: ${extraSecretKeys.includes('GH_TOKEN')}, kept (not unset): ${!allSecretKeys.includes('GH_TOKEN')}`);
+
   return async (input, _toolUseId, _context) => {
     const preInput = input as PreToolUseHookInput;
     const command = (preInput.tool_input as { command?: string })?.command;
@@ -582,14 +585,20 @@ async function main(): Promise<void> {
   // Inject them into the SDK environment so the agent can authenticate.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   if (containerInput.secrets) {
+    const cliVarsInjected: string[] = [];
     for (const [key, value] of Object.entries(containerInput.secrets)) {
       sdkEnv[key] = value;
       // Inject CLI tool credentials into process.env so Bash child
       // processes inherit them (SDK env option only affects API calls).
       if (CLI_PASSTHROUGH_VARS.has(key)) {
         process.env[key] = value;
+        cliVarsInjected.push(key);
       }
     }
+    log(`[env-inject] CLI vars injected into process.env: ${cliVarsInjected.join(', ') || '(none)'}`);
+    log(`[env-inject] GH_TOKEN in secrets: ${!!containerInput.secrets.GH_TOKEN}, length: ${containerInput.secrets.GH_TOKEN?.length ?? 0}`);
+    log(`[env-inject] GH_TOKEN in process.env after inject: ${!!process.env.GH_TOKEN}`);
+    log(`[env-inject] GH_TOKEN in sdkEnv: ${!!sdkEnv.GH_TOKEN}`);
     // Initialize telemetry (Langfuse + SQLite)
     await telemetry.init({
       secrets: containerInput.secrets as Record<string, string>,
