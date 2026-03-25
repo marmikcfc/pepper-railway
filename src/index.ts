@@ -74,7 +74,8 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setAllowedNumberFns, setChannels, startApiServer } from './api-server.js';
+import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer } from './api-server.js';
+import type { WebchatChannel } from './channels/webchat.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -142,6 +143,27 @@ function loadState(): void {
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
   );
+}
+
+/**
+ * Ensures the webchat admin channel (admin@nanoclaw) is registered as a group.
+ * Called after loadState() so we can check if it already exists.
+ * admin@nanoclaw never came from a real channel — it must be seeded explicitly.
+ */
+function bootstrapWebchatGroup(): void {
+  if (registeredGroups['admin@nanoclaw']) return; // Already registered (persists across restarts)
+
+  const now = new Date().toISOString();
+  storeChatMetadata('admin@nanoclaw', now, 'Dashboard', 'webchat', false);
+  registerGroup('admin@nanoclaw', {
+    name: 'Dashboard',
+    folder: 'webchat',
+    trigger: '',
+    added_at: now,
+    requiresTrigger: false,
+    isDM: true,
+  });
+  logger.info('Bootstrapped admin@nanoclaw webchat group');
 }
 
 function saveState(): void {
@@ -351,6 +373,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   });
 
   await channel.setTyping?.(chatJid, false);
+  if (channel.ownsJid('admin@nanoclaw')) {
+    (channel as WebchatChannel).currentTraceId = null;
+  }
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -622,6 +647,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  bootstrapWebchatGroup(); // Ensure admin@nanoclaw webchat group exists
   restoreRemoteControl();
 
   // Sync skills from lock file (re-clones registered repos so skills
@@ -754,6 +780,10 @@ async function main(): Promise<void> {
     startApiServer(Number(process.env.PORT));
   }
   setAllowedNumberFns(addAllowedWhatsAppNumber, removeAllowedWhatsAppNumber);
+  setWebchatFns(
+    (jid: string) => queue.enqueueMessageCheck(jid),
+    () => channels.find(c => c.name === 'webchat') as WebchatChannel | undefined,
+  );
 
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   // Channels connect concurrently so a slow channel (e.g. WhatsApp pairing) doesn't block others.
