@@ -194,11 +194,23 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 // Additional keys are passed dynamically via containerInput.secretKeyNames.
 const DEFAULT_SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
+// Env vars that CLI tools need at runtime — do NOT unset these.
+// These are secrets, but they must remain visible so that tools like
+// `gh`, `aws`, and `supabase` can authenticate.
+const CLI_PASSTHROUGH_VARS = new Set([
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_DEFAULT_REGION',
+  'SUPABASE_ACCESS_TOKEN',
+]);
+
 function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
   const allSecretKeys = [...new Set([
     ...DEFAULT_SECRET_ENV_VARS,
     ...extraSecretKeys,
-  ])];
+  ])].filter(key => !CLI_PASSTHROUGH_VARS.has(key));
 
   return async (input, _toolUseId, _context) => {
     const preInput = input as PreToolUseHookInput;
