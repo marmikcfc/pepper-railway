@@ -4,6 +4,7 @@ import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
@@ -126,6 +127,17 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add is_dm column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN is_dm INTEGER DEFAULT 0`);
+    // Backfill: infer isDM from JID pattern for existing rows
+    const rows = database.prepare(`SELECT jid FROM registered_groups`).all() as { jid: string }[];
+    for (const row of rows) {
+      const dm = inferIsDM(row.jid) ? 1 : 0;
+      database.prepare(`UPDATE registered_groups SET is_dm = ? WHERE jid = ?`).run(dm, row.jid);
+    }
+  } catch { /* column already exists */ }
+
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -211,12 +223,15 @@ export function storeChatMetadata(
  * Used during group metadata sync.
  */
 export function updateChatName(chatJid: string, name: string): void {
+  const isGroup = chatJid.endsWith('@g.us') ? 1 : null;
   db.prepare(
     `
-    INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
-    ON CONFLICT(jid) DO UPDATE SET name = excluded.name
+    INSERT INTO chats (jid, name, last_message_time, is_group) VALUES (?, ?, ?, ?)
+    ON CONFLICT(jid) DO UPDATE SET
+      name = excluded.name,
+      is_group = COALESCE(excluded.is_group, is_group)
   `,
-  ).run(chatJid, name, new Date().toISOString());
+  ).run(chatJid, name, new Date().toISOString(), isGroup);
 }
 
 export interface ChatInfo {
@@ -579,7 +594,7 @@ export function getRegisteredGroup(
         added_at: string;
         container_config: string | null;
         requires_trigger: number | null;
-        is_main: number | null;
+        is_dm: number | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -601,7 +616,7 @@ export function getRegisteredGroup(
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    isMain: row.is_main === 1 ? true : undefined,
+    isDM: row.is_dm === 1 ? true : undefined,
   };
 }
 
@@ -610,7 +625,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main)
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_dm)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
@@ -620,7 +635,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-    group.isMain ? 1 : 0,
+    group.isDM ? 1 : 0,
   );
 }
 
@@ -633,7 +648,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
-    is_main: number | null;
+    is_dm: number | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -654,7 +669,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      isMain: row.is_main === 1 ? true : undefined,
+      isDM: row.is_dm === 1 ? true : undefined,
     };
   }
   return result;

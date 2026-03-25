@@ -277,7 +277,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('only emits metadata for unregistered chats', async () => {
+    it('delivers messages from unregistered chats for auto-registration', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -292,7 +292,10 @@ describe('TelegramChannel', () => {
         'telegram',
         true,
       );
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:999999',
+        expect.objectContaining({ chat_jid: 'tg:999999', content: 'Unknown chat' }),
+      );
     });
 
     it('skips command messages (starting with /)', async () => {
@@ -685,7 +688,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('ignores non-text messages from unregistered chats', async () => {
+    it('delivers non-text messages from unregistered chats for auto-registration', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -693,7 +696,10 @@ describe('TelegramChannel', () => {
       const ctx = createMediaCtx({ chatId: 999999 });
       await triggerMediaMessage('message:photo', ctx);
 
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:999999',
+        expect.objectContaining({ chat_jid: 'tg:999999', content: '[Photo]' }),
+      );
     });
   });
 

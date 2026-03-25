@@ -117,8 +117,6 @@ export class TelegramChannel implements Channel {
         isGroup,
       );
 
-      // Deliver message — the orchestrator handles registration
-      // for unregistered chats dynamically
       this.opts.onMessage(chatJid, {
         id: msgId,
         chat_jid: chatJid,
@@ -139,8 +137,6 @@ export class TelegramChannel implements Channel {
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
       const chatJid = `tg:${ctx.chat.id}`;
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) return;
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =

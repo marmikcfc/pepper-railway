@@ -106,7 +106,6 @@ const testInput = {
   prompt: 'Hello',
   groupFolder: 'test-group',
   chatJid: 'test@g.us',
-  isMain: false,
 };
 
 function emitOutputMarker(

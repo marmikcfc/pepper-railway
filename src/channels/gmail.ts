@@ -5,7 +5,6 @@ import path from 'path';
 import { google, gmail_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 
-// isMain flag is used instead of MAIN_GROUP_FOLDER constant
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -293,46 +292,9 @@ export class GmailChannel implements Channel {
     // Store chat metadata for group discovery
     this.opts.onChatMetadata(chatJid, timestamp, subject, 'gmail', false);
 
-    // Find the main group to deliver the email notification
-    const groups = this.opts.registeredGroups();
-    const mainEntry = Object.entries(groups).find(([, g]) => g.isMain === true);
-
-    if (!mainEntry) {
-      logger.debug(
-        { chatJid, subject },
-        'No main group registered, skipping email',
-      );
-      return;
-    }
-
-    const mainJid = mainEntry[0];
-    const content = `[Email from ${senderName} <${senderEmail}>]\nSubject: ${subject}\n\n${body}`;
-
-    this.opts.onMessage(mainJid, {
-      id: messageId,
-      chat_jid: mainJid,
-      sender: senderEmail,
-      sender_name: senderName,
-      content,
-      timestamp,
-      is_from_me: false,
-    });
-
-    // Mark as read
-    try {
-      await this.gmail.users.messages.modify({
-        userId: 'me',
-        id: messageId,
-        requestBody: { removeLabelIds: ['UNREAD'] },
-      });
-    } catch (err) {
-      logger.warn({ messageId, err }, 'Failed to mark email as read');
-    }
-
-    logger.info(
-      { mainJid, from: senderName, subject },
-      'Gmail email delivered to main group',
-    );
+    // Gmail inbound routing not yet supported without main group
+    logger.warn('Gmail inbound routing not yet supported without main group. Skipping.');
+    return;
   }
 
   private extractTextBody(

@@ -34,7 +34,6 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
  */
 function prepareWorkspace(
   group: RegisteredGroup,
-  isMain: boolean,
 ): {
   groupDir: string;
   globalDir: string | undefined;
@@ -64,12 +63,10 @@ function prepareWorkspace(
     }
   }
 
-  // Global memory directory (for non-main groups)
+  // Global memory directory (read-only for all chats)
   let globalDir: string | undefined;
-  if (!isMain) {
-    const gd = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(gd)) globalDir = gd;
-  }
+  const gd = path.join(GROUPS_DIR, 'global');
+  if (fs.existsSync(gd)) globalDir = gd;
 
   // Per-group Claude sessions directory
   const claudeDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
@@ -132,7 +129,6 @@ export async function runRailwayAgent(
   const startTime = Date.now();
   const { groupDir, globalDir, extraDir, ipcDir, claudeDir } = prepareWorkspace(
     group,
-    input.isMain,
   );
 
   const agentRunnerPath =
@@ -146,7 +142,6 @@ export async function runRailwayAgent(
       group: group.name,
       processName,
       agentRunnerPath,
-      isMain: input.isMain,
     },
     'Spawning Railway agent process',
   );

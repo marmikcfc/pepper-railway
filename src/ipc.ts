@@ -6,19 +6,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import {
-  addMcpServer,
-  listMcpServers,
-  rebuildMcpJson,
-  removeMcpServer,
-} from './mcp-installer.js';
-import {
-  installSkillsFromRepo,
-  listSkills,
-  removeSkill,
-} from './skill-installer.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -29,7 +17,6 @@ export interface IpcDeps {
   getAvailableGroups: () => AvailableGroup[];
   writeGroupsSnapshot: (
     groupFolder: string,
-    isMain: boolean,
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
@@ -63,14 +50,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
     const registeredGroups = deps.registeredGroups();
 
-    // Build folder→isMain lookup from registered groups
-    const folderIsMain = new Map<string, boolean>();
-    for (const group of Object.values(registeredGroups)) {
-      if (group.isMain) folderIsMain.set(group.folder, true);
-    }
-
     for (const sourceGroup of groupFolders) {
-      const isMain = folderIsMain.get(sourceGroup) === true;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
 
@@ -88,8 +68,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  targetGroup && targetGroup.folder === sourceGroup
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
                   logger.info(
@@ -136,7 +115,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain, deps);
+              await processTaskIpc(data, sourceGroup, deps);
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
@@ -191,7 +170,6 @@ export async function processTaskIpc(
     env?: Record<string, string>;
   },
   sourceGroup: string, // Verified identity from IPC directory
-  isMain: boolean, // Verified from directory path
   deps: IpcDeps,
 ): Promise<void> {
   const registeredGroups = deps.registeredGroups();
@@ -218,8 +196,8 @@ export async function processTaskIpc(
 
         const targetFolder = targetGroupEntry.folder;
 
-        // Authorization: non-main groups can only schedule for themselves
-        if (!isMain && targetFolder !== sourceGroup) {
+        // Authorization: groups can only schedule for themselves
+        if (targetFolder !== sourceGroup) {
           logger.warn(
             { sourceGroup, targetFolder },
             'Unauthorized schedule_task attempt blocked',
@@ -294,7 +272,7 @@ export async function processTaskIpc(
     case 'pause_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && task.group_folder === sourceGroup) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -312,7 +290,7 @@ export async function processTaskIpc(
     case 'resume_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && task.group_folder === sourceGroup) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -330,7 +308,7 @@ export async function processTaskIpc(
     case 'cancel_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && task.group_folder === sourceGroup) {
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -355,7 +333,7 @@ export async function processTaskIpc(
           );
           break;
         }
-        if (!isMain && task.group_folder !== sourceGroup) {
+        if (task.group_folder !== sourceGroup) {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
             'Unauthorized task update attempt',
@@ -410,335 +388,67 @@ export async function processTaskIpc(
       break;
 
     case 'refresh_groups':
-      // Only main group can request a refresh
-      if (isMain) {
-        logger.info(
-          { sourceGroup },
-          'Group metadata refresh requested via IPC',
-        );
-        await deps.syncGroups(true);
-        // Write updated snapshot immediately
-        const availableGroups = deps.getAvailableGroups();
-        deps.writeGroupsSnapshot(
-          sourceGroup,
-          true,
-          availableGroups,
-          new Set(Object.keys(registeredGroups)),
-        );
-      } else {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized refresh_groups attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized refresh_groups attempt blocked',
+      );
       break;
 
     case 'register_group':
-      // Only main group can register new groups
-      if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized register_group attempt blocked',
-        );
-        break;
-      }
-      if (data.jid && data.name && data.folder && data.trigger) {
-        if (!isValidGroupFolder(data.folder)) {
-          logger.warn(
-            { sourceGroup, folder: data.folder },
-            'Invalid register_group request - unsafe folder name',
-          );
-          break;
-        }
-        // Defense in depth: agent cannot set isMain via IPC
-        deps.registerGroup(data.jid, {
-          name: data.name,
-          folder: data.folder,
-          trigger: data.trigger,
-          added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig,
-          requiresTrigger: data.requiresTrigger,
-        });
-      } else {
-        logger.warn(
-          { data },
-          'Invalid register_group request - missing required fields',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized register_group attempt blocked',
+      );
       break;
 
     case 'install_skills':
-      if (isMain && data.repo && data.requestId) {
-        logger.info(
-          { repo: data.repo, requestId: data.requestId, sourceGroup },
-          'Installing skills from repo via IPC',
-        );
-        try {
-          const result = await installSkillsFromRepo(data.repo);
-          // Write response to the group's IPC input directory
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            {
-              repo: data.repo,
-              installed: result.installed,
-              inputCount: result.requiredInputs.length,
-            },
-            'Skills installed via IPC',
-          );
-        } catch (err) {
-          logger.error(
-            { repo: data.repo, err },
-            'Failed to install skills via IPC',
-          );
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              installed: [],
-              requiredInputs: [],
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized install_skills attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized install_skills attempt blocked',
+      );
       break;
 
     case 'remove_skill':
-      if (isMain && data.name && data.requestId) {
-        logger.info(
-          { name: data.name, requestId: data.requestId, sourceGroup },
-          'Removing skill via IPC',
-        );
-        try {
-          const result = removeSkill(data.name);
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            { name: data.name, removed: result.removed },
-            'Skill removed via IPC',
-          );
-        } catch (err) {
-          logger.error(
-            { name: data.name, err },
-            'Failed to remove skill via IPC',
-          );
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              removed: false,
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized remove_skill attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized remove_skill attempt blocked',
+      );
       break;
 
     case 'list_skills':
-      if (isMain && data.requestId) {
-        try {
-          const result = listSkills();
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            { skillCount: result.skills.length },
-            'Skills listed via IPC',
-          );
-        } catch (err) {
-          logger.error({ err }, 'Failed to list skills via IPC');
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              skills: [],
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized list_skills attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized list_skills attempt blocked',
+      );
       break;
 
     case 'add_mcp_server':
-      if (isMain && data.name && data.command && data.requestId) {
-        logger.info(
-          { name: data.name, command: data.command, sourceGroup },
-          'Adding MCP server via IPC',
-        );
-        try {
-          const result = addMcpServer(data.name, {
-            command: data.command,
-            args: data.args || [],
-            env: data.env,
-          });
-          rebuildMcpJson();
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            { name: data.name, envVarsNeeded: result.envVarsNeeded },
-            'MCP server added via IPC',
-          );
-        } catch (err) {
-          logger.error(
-            { name: data.name, err },
-            'Failed to add MCP server via IPC',
-          );
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              added: false,
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized add_mcp_server attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized add_mcp_server attempt blocked',
+      );
       break;
 
     case 'remove_mcp_server':
-      if (isMain && data.name && data.requestId) {
-        logger.info(
-          { name: data.name, sourceGroup },
-          'Removing MCP server via IPC',
-        );
-        try {
-          const result = removeMcpServer(data.name);
-          rebuildMcpJson();
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            { name: data.name, removed: result.removed },
-            'MCP server removed via IPC',
-          );
-        } catch (err) {
-          logger.error(
-            { name: data.name, err },
-            'Failed to remove MCP server via IPC',
-          );
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              removed: false,
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized remove_mcp_server attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized remove_mcp_server attempt blocked',
+      );
       break;
 
     case 'list_mcp_servers':
-      if (isMain && data.requestId) {
-        try {
-          const result = listMcpServers();
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
-          logger.info(
-            { serverCount: result.servers.length },
-            'MCP servers listed via IPC',
-          );
-        } catch (err) {
-          logger.error({ err }, 'Failed to list MCP servers via IPC');
-          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
-          const responseFile = path.join(
-            groupIpcDir,
-            'input',
-            `${data.requestId}.json`,
-          );
-          fs.writeFileSync(
-            responseFile,
-            JSON.stringify({
-              servers: [],
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          );
-        }
-      } else if (!isMain) {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized list_mcp_servers attempt blocked',
-        );
-      }
+      // Admin operation — managed from the dashboard
+      logger.warn(
+        { sourceGroup },
+        'Unauthorized list_mcp_servers attempt blocked',
+      );
       break;
 
     default:

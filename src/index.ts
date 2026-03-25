@@ -1,13 +1,15 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 import {
+  ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   IS_RAILWAY,
   POLL_INTERVAL,
-  SLACK_MAIN_CHANNEL_ID,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -70,8 +72,9 @@ import { syncSkillsOnStartup } from './skill-installer.js';
 import { syncIntegrationsOnStartup } from './integrations/activator.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setChannels, startApiServer } from './api-server.js';
+import { setAllowedNumberFns, setChannels, startApiServer } from './api-server.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -81,6 +84,45 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+
+let allowedWhatsAppNumbers: Set<string> = new Set();
+
+async function fetchAllowedNumbers(): Promise<void> {
+  const cloudUrl = process.env.NANOCLAW_CLOUD_URL;
+  const tenantId = process.env.TENANT_ID;
+  const secret = process.env.NANOCLAW_EVENT_SECRET;
+  if (!cloudUrl || !tenantId || !secret) return;
+
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(tenantId)
+    .digest('hex');
+
+  try {
+    const res = await fetch(`${cloudUrl}/api/provision/${tenantId}/allowed-numbers`, {
+      headers: { 'x-signature': signature },
+    });
+    if (res.ok) {
+      const data = await res.json() as { numbers?: string[] };
+      allowedWhatsAppNumbers = new Set(data.numbers || []);
+      logger.info({ count: allowedWhatsAppNumbers.size }, 'Loaded allowed WhatsApp numbers');
+    } else {
+      logger.warn({ status: res.status }, 'Failed to fetch allowed numbers, retrying in 30s');
+      setTimeout(fetchAllowedNumbers, 30000);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch allowed numbers, retrying in 30s');
+    setTimeout(fetchAllowedNumbers, 30000);
+  }
+}
+
+export function addAllowedWhatsAppNumber(phone: string): void {
+  allowedWhatsAppNumbers.add(phone);
+}
+
+export function removeAllowedWhatsAppNumber(phone: string): void {
+  allowedWhatsAppNumbers.delete(phone);
+}
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -140,7 +182,7 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
   const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter((c) => c.jid !== '__group_sync__')
+    .filter((c) => c.jid !== '__group_sync__' && c.is_group === 1)
     .map((c) => ({
       jid: c.jid,
       name: c.name,
@@ -170,7 +212,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.isMain === true;
+  const isDM = group.isDM === true;
+
+  // WhatsApp personal number mode: check whitelist for DMs
+  if (isDM && !ASSISTANT_HAS_OWN_NUMBER && chatJid.endsWith('@s.whatsapp.net')) {
+    const phone = chatJid.replace('@s.whatsapp.net', '');
+    const ownPhone = channel?.getConnectedPhone?.();
+    if (phone !== ownPhone && !allowedWhatsAppNumbers.has(phone)) {
+      return true; // Skip — not in whitelist
+    }
+  }
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
@@ -181,8 +232,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  // For non-DM chats, check if trigger is required and present
+  if (!isDM && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
@@ -297,14 +348,12 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
-  const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
   writeTasksSnapshot(
     group.folder,
-    isMain,
     tasks.map((t) => ({
       id: t.id,
       groupFolder: t.group_folder,
@@ -316,11 +365,10 @@ async function runAgent(
     })),
   );
 
-  // Update available groups snapshot (main group only can see all groups)
+  // Update available groups snapshot
   const availableGroups = getAvailableGroups();
   writeGroupsSnapshot(
     group.folder,
-    isMain,
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
@@ -344,7 +392,6 @@ async function runAgent(
         sessionId,
         groupFolder: group.folder,
         chatJid,
-        isMain,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -418,10 +465,20 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const isDM = group.isDM === true;
 
-          // For non-main groups, only act on trigger messages.
+          // WhatsApp personal number mode: check whitelist for DMs
+          if (isDM && !ASSISTANT_HAS_OWN_NUMBER && chatJid.endsWith('@s.whatsapp.net')) {
+            const phone = chatJid.replace('@s.whatsapp.net', '');
+            const ownPhone = channel?.getConnectedPhone?.();
+            if (phone !== ownPhone && !allowedWhatsAppNumbers.has(phone)) {
+              continue; // Skip — not in whitelist
+            }
+          }
+
+          const needsTrigger = !isDM && group.requiresTrigger !== false;
+
+          // For non-DM chats, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
@@ -566,44 +623,17 @@ async function main(): Promise<void> {
 
   // Handle /remote-control and /remote-control-end commands
   async function handleRemoteControl(
-    command: string,
+    _command: string,
     chatJid: string,
-    msg: NewMessage,
+    _msg: NewMessage,
   ): Promise<void> {
-    const group = registeredGroups[chatJid];
-    if (!group?.isMain) {
-      logger.warn(
-        { chatJid, sender: msg.sender },
-        'Remote control rejected: not main group',
-      );
-      return;
-    }
-
     const channel = findChannel(channels, chatJid);
     if (!channel) return;
 
-    if (command === '/remote-control') {
-      const result = await startRemoteControl(
-        msg.sender,
-        chatJid,
-        process.cwd(),
-      );
-      if (result.ok) {
-        await channel.sendMessage(chatJid, result.url);
-      } else {
-        await channel.sendMessage(
-          chatJid,
-          `Remote Control failed: ${result.error}`,
-        );
-      }
-    } else {
-      const result = stopRemoteControl();
-      if (result.ok) {
-        await channel.sendMessage(chatJid, 'Remote Control session ended.');
-      } else {
-        await channel.sendMessage(chatJid, result.error);
-      }
-    }
+    await channel.sendMessage(
+      chatJid,
+      'Remote control is managed from the dashboard.',
+    );
   }
 
   // Channel callbacks (shared by all channels)
@@ -619,8 +649,7 @@ async function main(): Promise<void> {
       }
 
       // Auto-register unregistered chats on first message.
-      // If no main group exists, the first chat becomes main (no trigger needed).
-      // Otherwise, register as a normal chat (trigger required).
+      // DMs don't require trigger, groups do.
       if (!registeredGroups[chatJid]) {
         let prefix: string | undefined;
         if (chatJid.startsWith('slack:')) prefix = 'slack';
@@ -633,41 +662,25 @@ async function main(): Promise<void> {
           prefix = 'wa';
 
         if (prefix) {
-          const hasMain = Object.values(registeredGroups).some(
-            (g) => g.isMain === true,
-          );
           const chatName = msg.sender_name || chatJid;
           const safeName = chatName
             .replace(/[^a-zA-Z0-9-]/g, '-')
             .toLowerCase()
             .slice(0, 50);
+          const chatIsDM = inferIsDM(chatJid);
 
-          if (!hasMain) {
-            registerGroup(chatJid, {
-              name: chatName,
-              folder: 'main',
-              trigger: `@${ASSISTANT_NAME}`,
-              added_at: new Date().toISOString(),
-              isMain: true,
-              requiresTrigger: false,
-            });
-            logger.info(
-              { jid: chatJid, name: chatName },
-              'Auto-registered first chat as main',
-            );
-          } else {
-            registerGroup(chatJid, {
-              name: chatName,
-              folder: `${prefix}_${safeName}`,
-              trigger: `@${ASSISTANT_NAME}`,
-              added_at: new Date().toISOString(),
-              requiresTrigger: true,
-            });
-            logger.info(
-              { jid: chatJid, name: chatName },
-              'Auto-registered chat on first message',
-            );
-          }
+          registerGroup(chatJid, {
+            name: chatName,
+            folder: `${prefix}_${safeName}`,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: !chatIsDM,
+            isDM: chatIsDM || undefined,
+          });
+          logger.info(
+            { jid: chatJid, name: chatName, isDM: chatIsDM },
+            'Auto-registered chat on first message',
+          );
         }
       }
 
@@ -706,8 +719,11 @@ async function main(): Promise<void> {
   if (process.env.PORT) {
     startApiServer(Number(process.env.PORT));
   }
+  setAllowedNumberFns(addAllowedWhatsAppNumber, removeAllowedWhatsAppNumber);
 
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Channels connect concurrently so a slow channel (e.g. WhatsApp pairing) doesn't block others.
+  const connectableChannels: Channel[] = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -718,129 +734,17 @@ async function main(): Promise<void> {
       );
       continue;
     }
+    connectableChannels.push(channel);
     channels.push(channel);
     setChannels(channels);  // Update API server immediately so commands work during connect()
-    await channel.connect();
   }
-  if (channels.length === 0) {
-    logger.fatal('No channels connected');
+  if (connectableChannels.length === 0) {
+    logger.fatal('No channels configured');
     process.exit(1);
   }
 
-  // Auto-register main group (zero-config Railway deploy).
-  // Runs on every startup but only acts when no groups are registered yet.
-  // Once registered, the group persists in SQLite across restarts.
-  if (Object.keys(registeredGroups).length === 0) {
-    // Sync groups first so we have chat metadata
-    await Promise.all(
-      channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(true)),
-    );
-
-    let mainJid: string | undefined;
-    let mainName: string | undefined;
-
-    // Priority 1: SLACK_MAIN_CHANNEL_ID — directly register a Slack channel as main
-    if (SLACK_MAIN_CHANNEL_ID) {
-      mainJid = `slack:${SLACK_MAIN_CHANNEL_ID}`;
-      mainName = ASSISTANT_NAME;
-      logger.info(
-        { channelId: SLACK_MAIN_CHANNEL_ID },
-        'Using SLACK_MAIN_CHANNEL_ID for main group',
-      );
-    }
-
-    // Priority 2: Match ASSISTANT_NAME against chat names
-    if (!mainJid) {
-      const allChats = getAllChats();
-      const match = allChats.find(
-        (c) => c.name?.toLowerCase() === ASSISTANT_NAME.toLowerCase(),
-      );
-      if (match) {
-        mainJid = match.jid;
-        mainName = match.name || ASSISTANT_NAME;
-      }
-
-      // Priority 3: Use first available chat (covers DMs where chat name
-      // is the user's name, not the bot's)
-      if (!mainJid && allChats.length > 0) {
-        mainJid = allChats[0].jid;
-        mainName = allChats[0].name || ASSISTANT_NAME;
-        logger.info(
-          { jid: mainJid, name: mainName },
-          'No chat matching ASSISTANT_NAME — using first available chat as main',
-        );
-      }
-
-      if (!mainJid) {
-        logger.warn(
-          { assistantName: ASSISTANT_NAME },
-          'No chats found. Send a message to the bot, then restart.',
-        );
-      }
-    }
-
-    if (mainJid) {
-      registerGroup(mainJid, {
-        name: mainName || ASSISTANT_NAME,
-        folder: 'main',
-        trigger: `@${ASSISTANT_NAME}`,
-        added_at: new Date().toISOString(),
-        isMain: true,
-        requiresTrigger: false,
-      });
-      logger.info(
-        { jid: mainJid, name: mainName },
-        'Auto-registered main group',
-      );
-    }
-  }
-
-  // Auto-register any chats (groups or DMs) the bot is a member of that
-  // aren't already registered. Runs on every startup so newly-added
-  // channels (Slack, Telegram, Discord, WhatsApp) are picked up automatically.
-  {
-    await Promise.all(
-      channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(false)),
-    );
-    const allChats = getAllChats();
-    for (const chat of allChats) {
-      if (!registeredGroups[chat.jid] && chat.name) {
-        // Derive channel prefix for folder name
-        let prefix: string;
-        if (chat.jid.startsWith('slack:')) prefix = 'slack';
-        else if (chat.jid.startsWith('tg:')) prefix = 'tg';
-        else if (chat.jid.startsWith('dc:')) prefix = 'dc';
-        else if (
-          chat.jid.includes('@g.us') ||
-          chat.jid.includes('@s.whatsapp.net')
-        )
-          prefix = 'wa';
-        else continue; // skip unknown JID formats (gmail, etc.)
-
-        const safeName = chat.name
-          .replace(/[^a-zA-Z0-9-]/g, '-')
-          .toLowerCase()
-          .slice(0, 50);
-        const folderName = `${prefix}_${safeName}`;
-        registerGroup(chat.jid, {
-          name: chat.name,
-          folder: folderName,
-          trigger: `@${ASSISTANT_NAME}`,
-          added_at: new Date().toISOString(),
-          requiresTrigger: true,
-        });
-        logger.info(
-          { jid: chat.jid, name: chat.name, folder: folderName },
-          'Auto-registered chat',
-        );
-      }
-    }
-  }
-
-  // Final setChannels ensures the API server sees all connected channels
-  setChannels(channels);
-
-  // Start subsystems (independently of connection handler)
+  // Start subsystems immediately — they tolerate an empty channel list
+  // via findChannel() null checks, and pick up channels as they connect.
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
@@ -868,20 +772,146 @@ async function main(): Promise<void> {
     syncGroups: async (force: boolean) => {
       await Promise.all(
         channels
-          .filter((ch) => ch.syncGroups)
+          .filter((ch) => ch.syncGroups && ch.isConnected())
           .map((ch) => ch.syncGroups!(force)),
       );
     },
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) =>
-      writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, ag, rj) =>
+      writeGroupsSnapshot(gf, ag, rj),
   });
   queue.setProcessMessagesFn(processGroupMessages);
-  recoverPendingMessages();
-  startMessageLoop().catch((err) => {
-    logger.fatal({ err }, 'Message loop crashed unexpectedly');
+
+  // Fetch allowed WhatsApp numbers from cloud (personal number mode whitelist)
+  fetchAllowedNumbers().catch((err) =>
+    logger.warn({ err }, 'Failed to fetch allowed WhatsApp numbers on startup'),
+  );
+
+  // Migrate existing 'main' folder to prefix_safename format
+  {
+    const mainGroup = Object.entries(registeredGroups).find(
+      ([, g]) => g.folder === 'main',
+    );
+    if (mainGroup) {
+      const [jid, group] = mainGroup;
+      let prefix: string | undefined;
+      if (jid.startsWith('slack:')) prefix = 'slack';
+      else if (jid.startsWith('tg:')) prefix = 'tg';
+      else if (jid.startsWith('dc:')) prefix = 'dc';
+      else if (jid.includes('@g.us') || jid.includes('@s.whatsapp.net')) prefix = 'wa';
+
+      if (prefix) {
+        const safeName = (group.name || jid)
+          .replace(/[^a-zA-Z0-9-]/g, '-')
+          .toLowerCase()
+          .slice(0, 50);
+        const newFolder = `${prefix}_${safeName}`;
+        const oldPath = path.join(GROUPS_DIR, 'main');
+        const newPath = path.join(GROUPS_DIR, newFolder);
+
+        if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+          fs.renameSync(oldPath, newPath);
+          logger.info({ oldFolder: 'main', newFolder }, 'Migrated main folder');
+        }
+
+        // Re-register with new folder name and isDM
+        const chatIsDM = inferIsDM(jid);
+        registerGroup(jid, {
+          ...group,
+          folder: newFolder,
+          isDM: chatIsDM || undefined,
+          requiresTrigger: !chatIsDM,
+        });
+        logger.info({ jid, newFolder, isDM: chatIsDM }, 'Migrated main group registration');
+      }
+    }
+  }
+
+  // Connect all channels concurrently. Start the message loop as soon as
+  // the first channel connects so fast channels aren't blocked by slow ones.
+  let subsystemsStarted = false;
+  const startSubsystemsOnce = () => {
+    if (subsystemsStarted) return;
+    subsystemsStarted = true;
+
+    // Sync groups from connected channels and auto-register chats
+    const syncAndRegister = async () => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups && ch.isConnected())
+          .map((ch) => ch.syncGroups!(false)),
+      );
+      const allChats = getAllChats();
+      for (const chat of allChats) {
+        if (!registeredGroups[chat.jid] && chat.name) {
+          let prefix: string;
+          if (chat.jid.startsWith('slack:')) prefix = 'slack';
+          else if (chat.jid.startsWith('tg:')) prefix = 'tg';
+          else if (chat.jid.startsWith('dc:')) prefix = 'dc';
+          else if (
+            chat.jid.includes('@g.us') ||
+            chat.jid.includes('@s.whatsapp.net')
+          )
+            prefix = 'wa';
+          else continue;
+
+          const safeName = chat.name
+            .replace(/[^a-zA-Z0-9-]/g, '-')
+            .toLowerCase()
+            .slice(0, 50);
+          const folderName = `${prefix}_${safeName}`;
+          const chatIsDM = chat.is_group === 1 ? false : inferIsDM(chat.jid);
+          registerGroup(chat.jid, {
+            name: chat.name,
+            folder: folderName,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: !chatIsDM,
+            isDM: chatIsDM || undefined,
+          });
+          logger.info(
+            { jid: chat.jid, name: chat.name, folder: folderName, isDM: chatIsDM },
+            'Auto-registered chat',
+          );
+        }
+      }
+    };
+
+    syncAndRegister().catch((err) =>
+      logger.warn({ err }, 'Initial group sync failed'),
+    );
+
+    recoverPendingMessages();
+    startMessageLoop().catch((err) => {
+      logger.fatal({ err }, 'Message loop crashed unexpectedly');
+      process.exit(1);
+    });
+  };
+
+  await Promise.allSettled(
+    connectableChannels.map(async (channel) => {
+      try {
+        await channel.connect();
+        logger.info({ channel: channel.constructor.name }, 'Channel connected');
+        startSubsystemsOnce();
+
+        // Sync groups for this newly-connected channel
+        if (channel.syncGroups) {
+          channel.syncGroups(false).catch((err) =>
+            logger.warn({ err }, 'Post-connect group sync failed'),
+          );
+        }
+      } catch (err) {
+        logger.error({ err, channel: channel.constructor.name }, 'Channel failed to connect');
+      }
+    }),
+  );
+
+  // If no channels connected at all, exit
+  if (!subsystemsStarted) {
+    logger.fatal('No channels connected');
     process.exit(1);
-  });
+  }
 }
 
 // Guard: only run when executed directly, not when imported by tests
