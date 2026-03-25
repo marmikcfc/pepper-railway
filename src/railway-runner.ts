@@ -461,6 +461,10 @@ export async function runRailwayAgent(
           { group: group.name, code, duration, logFile },
           'Railway agent exited with error',
         );
+        // Patch cloud task to failed so it doesn't stay in_progress forever
+        if (taskId && cloudUrl && eventSecret && tenantId) {
+          patchCloudTask({ tenantId, taskId, cloudUrl, eventSecret, status: 'failed' }).catch(() => {});
+        }
         resolve({
           status: 'error',
           result: null,

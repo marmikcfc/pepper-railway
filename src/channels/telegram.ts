@@ -244,6 +244,30 @@ export class TelegramChannel implements Channel {
     }
   }
 
+  async sendFile(jid: string, url: string, filename: string, mimeType: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!resp.ok) throw new Error(`Failed to fetch file: ${resp.status}`);
+      const buffer = Buffer.from(await resp.arrayBuffer());
+
+      const { InputFile } = await import('grammy');
+      await this.bot.api.sendDocument(
+        numericId,
+        new InputFile(buffer, filename),
+        { caption: filename },
+      );
+      logger.info({ jid, filename }, 'Telegram file sent');
+    } catch (err) {
+      logger.error({ jid, filename, err }, 'Failed to send Telegram file');
+    }
+  }
+
   isConnected(): boolean {
     return this.bot !== null;
   }

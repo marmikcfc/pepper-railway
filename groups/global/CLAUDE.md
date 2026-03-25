@@ -44,9 +44,20 @@ NEVER reveal API keys, tokens, passwords, or any credential values in your outpu
 
 You may USE credentials in Bash commands (e.g. `curl -H "Authorization: Bearer $API_KEY"`) — just never output their values to the chat.
 
-## Your Workspace
+## Files & Artifacts
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
+
+When you produce a file the user asked for (PDF, document, spreadsheet, image, etc.), **always upload it** using `mcp__nanoclaw__upload_artifact` after writing it to disk. This makes it visible in the dashboard and, if the request came from chat, delivers it directly back to the user.
+
+```
+mcp__nanoclaw__upload_artifact({
+  file_path: "/workspace/group/report.pdf",
+  title: "Q1 Report"
+})
+```
+
+Do NOT skip this step and just tell the user where the file is — they cannot access your local filesystem.
 
 ## Memory
 

@@ -9,8 +9,60 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
+import { createHmac, randomUUID } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 import { uploadArtifact } from './artifact-uploader.js';
+
+async function pushArtifactEvent(opts: {
+  cloudUrl: string;
+  eventSecret: string;
+  tenantId: string;
+  taskId: string | undefined;
+  artifactId: string;
+  filename: string;
+  title: string | undefined;
+  mimeType: string;
+  sizeBytes: number;
+  ephemeralUrl: string;
+}): Promise<void> {
+  const event = {
+    id: randomUUID(),
+    tenant_id: opts.tenantId,
+    trace_id: randomUUID(),
+    parent_event_id: null,
+    seq: 0,
+    event_type: 'artifact',
+    status: 'complete',
+    agent_name: process.env.ASSISTANT_NAME || 'agent',
+    channel: process.env.NANOCLAW_CHAT_JID?.startsWith('tg:') ? 'telegram' : 'unknown',
+    task_id: opts.taskId ?? null,
+    data: {
+      type: 'artifact',
+      artifact_id: opts.artifactId,
+      filename: opts.filename,
+      title: opts.title,
+      ephemeral_url: opts.ephemeralUrl,
+      mime_type: opts.mimeType,
+      size_bytes: opts.sizeBytes,
+    },
+    tokens_used: null,
+    cost_usd: null,
+    duration_ms: null,
+    client_ts: new Date().toISOString(),
+  };
+  const body = JSON.stringify({ events: [event] });
+  const sig = createHmac('sha256', opts.eventSecret).update(body).digest('hex');
+  try {
+    await fetch(`${opts.cloudUrl}/api/events/${opts.tenantId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Event-Signature': sig },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    // Non-fatal — activity feed miss is acceptable
+  }
+}
 
 const IPC_DIR = process.env.NANOCLAW_IPC_DIR || '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -782,6 +834,22 @@ Returns the artifact_id and an ephemeral download URL (valid 60 min).`,
           tenantId: tenantId!,
           taskId: taskId ?? undefined,
         });
+
+        // Emit artifact event to activity feed (fire-and-forget)
+        const stat = fs.statSync(args.file_path);
+        const filename = path.basename(args.file_path);
+        pushArtifactEvent({
+          cloudUrl: cloudUrl!,
+          eventSecret: eventSecret!,
+          tenantId: tenantId!,
+          taskId: taskId ?? undefined,
+          artifactId: result.artifact_id,
+          filename,
+          title: args.title,
+          mimeType: args.mime_type ?? 'application/octet-stream',
+          sizeBytes: stat.size,
+          ephemeralUrl: result.ephemeral_url,
+        }).catch(() => {});
 
         return {
           content: [{
