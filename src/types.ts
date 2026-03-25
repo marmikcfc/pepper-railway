@@ -52,6 +52,8 @@ export interface NewMessage {
   is_from_me?: boolean;
   is_bot_message?: boolean;
   thread_id?: string; // Slack thread_ts or equivalent thread identifier
+  /** Processed media attachments (images/PDFs). Serialized to SQLite as JSON. */
+  attachments?: import('./media.js').ProcessedAttachment[];
 }
 
 export interface ScheduledTask {

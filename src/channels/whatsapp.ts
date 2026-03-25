@@ -6,6 +6,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   WASocket,
+  downloadMediaMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
@@ -26,6 +27,7 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { downloadBuffer, processImage, processPdf, ProcessedAttachment } from '../media.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -335,14 +337,50 @@ export class WhatsAppChannel implements Channel {
           isGroup,
         );
 
-        const content =
+        let content =
           normalized.conversation ||
           normalized.extendedTextMessage?.text ||
           normalized.imageMessage?.caption ||
           normalized.videoMessage?.caption ||
           '';
 
-        // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+        // Download and process image/document attachments
+        const attachments: ProcessedAttachment[] = [];
+
+        if (normalized.imageMessage) {
+          try {
+            const buffer = await downloadMediaMessage(
+              { key: msg.key, message: normalized },
+              'buffer',
+              {},
+            ) as Buffer;
+            const mimeType = normalized.imageMessage.mimetype || 'image/jpeg';
+            attachments.push(await processImage(buffer, mimeType));
+            if (!content) content = '[Image]';
+          } catch (err) {
+            logger.warn({ err }, 'WhatsApp: failed to process image, using placeholder');
+            if (!content) content = '[Image]';
+          }
+        } else if (
+          normalized.documentMessage &&
+          normalized.documentMessage.mimetype === 'application/pdf'
+        ) {
+          try {
+            const buffer = await downloadMediaMessage(
+              { key: msg.key, message: normalized },
+              'buffer',
+              {},
+            ) as Buffer;
+            const filename = normalized.documentMessage.fileName ?? undefined;
+            attachments.push(processPdf(buffer, filename));
+            if (!content) content = `[PDF: ${filename || 'document.pdf'}]`;
+          } catch (err) {
+            logger.warn({ err }, 'WhatsApp: failed to process PDF, using placeholder');
+            if (!content) content = `[PDF: ${normalized.documentMessage.fileName || 'document.pdf'}]`;
+          }
+        }
+
+        // Skip protocol messages with no text content and no media (encryption keys, read receipts, etc.)
         if (!content) continue;
 
         const sender = msg.key.participant || msg.key.remoteJid || '';
@@ -366,6 +404,7 @@ export class WhatsAppChannel implements Channel {
           timestamp,
           is_from_me: fromMe,
           is_bot_message: isBotMessage,
+          attachments: attachments.length ? attachments : undefined,
         });
       }
     });

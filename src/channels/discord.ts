@@ -10,6 +10,7 @@ import {
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { downloadBuffer, processImage, processPdf, ProcessedAttachment } from '../media.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -95,26 +96,40 @@ export class DiscordChannel implements Channel {
         }
       }
 
-      // Handle attachments — store placeholders so the agent knows something was sent
+      // Handle attachments — download images and PDFs for multimodal; others get placeholders
+      const processedAttachments: ProcessedAttachment[] = [];
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map(
-          (att) => {
-            const contentType = att.contentType || '';
-            if (contentType.startsWith('image/')) {
-              return `[Image: ${att.name || 'image'}]`;
-            } else if (contentType.startsWith('video/')) {
-              return `[Video: ${att.name || 'video'}]`;
-            } else if (contentType.startsWith('audio/')) {
-              return `[Audio: ${att.name || 'audio'}]`;
-            } else {
-              return `[File: ${att.name || 'file'}]`;
+        const descriptions: string[] = [];
+        for (const att of message.attachments.values()) {
+          const contentType = att.contentType || '';
+          if (contentType.startsWith('image/')) {
+            try {
+              const buffer = await downloadBuffer(att.url);
+              processedAttachments.push(await processImage(buffer, contentType, att.name ?? undefined));
+              descriptions.push(`[Image: ${att.name || 'image'}]`);
+            } catch (err) {
+              logger.warn({ err, name: att.name }, 'Discord: failed to process image attachment');
+              descriptions.push(`[Image: ${att.name || 'image'}]`);
             }
-          },
-        );
-        if (content) {
-          content = `${content}\n${attachmentDescriptions.join('\n')}`;
-        } else {
-          content = attachmentDescriptions.join('\n');
+          } else if (contentType === 'application/pdf') {
+            try {
+              const buffer = await downloadBuffer(att.url);
+              processedAttachments.push(processPdf(buffer, att.name ?? undefined));
+              descriptions.push(`[PDF: ${att.name || 'file.pdf'}]`);
+            } catch (err) {
+              logger.warn({ err, name: att.name }, 'Discord: failed to process PDF attachment');
+              descriptions.push(`[PDF: ${att.name || 'file.pdf'}]`);
+            }
+          } else if (contentType.startsWith('video/')) {
+            descriptions.push(`[Video: ${att.name || 'video'}]`);
+          } else if (contentType.startsWith('audio/')) {
+            descriptions.push(`[Audio: ${att.name || 'audio'}]`);
+          } else {
+            descriptions.push(`[File: ${att.name || 'file'}]`);
+          }
+        }
+        if (descriptions.length > 0) {
+          content = content ? `${content}\n${descriptions.join('\n')}` : descriptions.join('\n');
         }
       }
 
@@ -167,6 +182,7 @@ export class DiscordChannel implements Channel {
         timestamp,
         is_from_me: false,
         thread_id: threadId,
+        attachments: processedAttachments.length ? processedAttachments : undefined,
       });
 
       logger.info(

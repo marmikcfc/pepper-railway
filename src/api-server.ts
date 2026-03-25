@@ -2,6 +2,7 @@ import http from 'http';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 
 import { logger } from './logger.js';
+import { downloadBuffer, processImage, processPdf } from './media.js';
 import { Channel } from './types.js';
 import { storeMessage, getAllRegisteredGroups } from './db.js';
 import { enableIntegration, disableIntegration } from './integrations/activator.js';
@@ -127,16 +128,40 @@ async function handleWebhookEvent(body: unknown, res: http.ServerResponse): Prom
 
   // Webchat path: bypass groupEntries lookup, store directly to admin@nanoclaw
   if (integrationId === 'webchat') {
-    const { content, traceId } = (payload as { content: string; traceId: string });
+    const { content, traceId, attachments: rawAttachments } = (payload as {
+      content?: string;
+      traceId: string;
+      attachments?: { url: string; mimeType: string; filename?: string }[];
+    });
+
+    // Download and process any attachments (images/PDFs)
+    const processedAttachments: import('./media.js').ProcessedAttachment[] = [];
+    for (const att of rawAttachments ?? []) {
+      try {
+        const buffer = await downloadBuffer(att.url);
+        const processed = att.mimeType === 'application/pdf'
+          ? processPdf(buffer, att.filename)
+          : await processImage(buffer, att.mimeType, att.filename);
+        processedAttachments.push(processed);
+      } catch (err) {
+        logger.warn({ err, url: att.url }, 'Failed to process webchat attachment');
+      }
+    }
+
+    const messageContent = content || processedAttachments.map((a) =>
+      a.type === 'image' ? '[Image]' : '[PDF]'
+    ).join(' ') || '';
+
     storeMessage({
       id: randomUUID(),
       chat_jid: 'admin@nanoclaw',
       sender: 'dashboard-owner',
       sender_name: 'You',
-      content,
+      content: messageContent,
       timestamp: new Date().toISOString(),
       is_from_me: true,
       is_bot_message: false,
+      attachments: processedAttachments.length ? processedAttachments : undefined,
     });
 
     // Queue the trace ID on the channel BEFORE enqueueing. Using incomingTraceId

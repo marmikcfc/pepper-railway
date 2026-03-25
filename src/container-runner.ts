@@ -41,6 +41,8 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 export interface ContainerInput {
   prompt: string;
+  /** Processed media attachments from the triggering message(s). Passed via stdin as JSON. */
+  attachments?: import('./media.js').ProcessedAttachment[];
   sessionId?: string;
   groupFolder: string;
   chatJid: string;

@@ -318,6 +318,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     prompt = formatMessages(missedMessages, TIMEZONE);
   }
 
+  // Collect attachments from all pending messages (first 5 to avoid huge payloads)
+  const attachments = missedMessages
+    .flatMap((m) => m.attachments ?? [])
+    .slice(0, 5);
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -326,7 +331,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { group: group.name, messageCount: missedMessages.length, attachmentCount: attachments.length },
     'Processing messages',
   );
 
@@ -348,7 +353,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, attachments.length ? attachments : undefined, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -422,6 +427,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  attachments?: import('./media.js').ProcessedAttachment[],
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const sessionId = sessions[group.folder];
@@ -465,6 +471,7 @@ async function runAgent(
       group,
       {
         prompt,
+        attachments: attachments?.length ? attachments : undefined,
         sessionId,
         groupFolder: group.folder,
         chatJid,
