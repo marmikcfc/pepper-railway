@@ -3,7 +3,7 @@
 
 export const EventTypes = [
   'query_start', 'reasoning', 'tool_call', 'tool_result',
-  'subagent_start', 'subagent_end', 'response', 'error',
+  'subagent_start', 'subagent_end', 'response', 'error', 'artifact',
 ] as const;
 
 export type EventType = (typeof EventTypes)[number];
@@ -18,7 +18,16 @@ export type EventData =
   | { type: 'subagent_start'; task_id: string; task_description: string }
   | { type: 'subagent_end'; task_id: string; status: 'completed' | 'failed' | 'stopped' }
   | { type: 'response'; text: string; is_error: boolean }
-  | { type: 'error'; error_type: string; message: string };
+  | { type: 'error'; error_type: string; message: string }
+  | {
+      type: 'artifact';
+      artifact_id: string;
+      filename: string;
+      title?: string;
+      ephemeral_url: string;
+      mime_type: string;
+      size_bytes: number;
+    };
 
 export interface AgentEvent {
   id: string;
@@ -30,6 +39,7 @@ export interface AgentEvent {
   status: EventStatus;
   agent_name: string;
   channel: string;
+  task_id: string | null;
   data: EventData;
   tokens_used: number | null;
   cost_usd: number | null;
