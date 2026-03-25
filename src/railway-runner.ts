@@ -7,6 +7,8 @@ import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { createHmac } from 'crypto';
+
 import {
   ASSISTANT_NAME,
   CONTAINER_MAX_OUTPUT_SIZE,
@@ -27,6 +29,68 @@ import { RegisteredGroup } from './types.js';
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+// ─── Cloud Task Lifecycle Helpers ─────────────────────────────
+
+function cloudHmac(secret: string, body: string): string {
+  return createHmac('sha256', secret).update(body).digest('hex');
+}
+
+async function createCloudTask(opts: {
+  tenantId: string;
+  cloudUrl: string;
+  eventSecret: string;
+  channel: string;
+  origin: string;
+  chatJid: string;
+  title?: string;
+}): Promise<string | null> {
+  const body = JSON.stringify({
+    title: opts.title,
+    channel: opts.channel,
+    origin: opts.origin,
+    chat_jid: opts.chatJid,
+  });
+  try {
+    const resp = await fetch(`${opts.cloudUrl}/api/tasks/${opts.tenantId}/create`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Event-Signature': cloudHmac(opts.eventSecret, body),
+      },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { task_id?: string };
+    return data.task_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function patchCloudTask(opts: {
+  tenantId: string;
+  taskId: string;
+  cloudUrl: string;
+  eventSecret: string;
+  status: string;
+}): Promise<void> {
+  const body = JSON.stringify({ status: opts.status });
+  try {
+    await fetch(`${opts.cloudUrl}/api/tasks/${opts.tenantId}/${opts.taskId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Event-Signature': cloudHmac(opts.eventSecret, body),
+      },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    // Non-fatal
+  }
+}
 
 /**
  * Prepare workspace directories and settings (same as container-runner's
@@ -149,6 +213,29 @@ export async function runRailwayAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Create cloud task (fire-and-forget: proceed even if this fails)
+  const cloudUrl = process.env.NANOCLAW_CLOUD_URL || '';
+  const eventSecret = process.env.NANOCLAW_EVENT_SECRET || '';
+  const tenantId = process.env.TENANT_ID || '';
+  const channel = input.channel || group.folder.split('_')[0] || 'unknown';
+  const origin = input.isScheduledTask ? 'dashboard' : (input.origin || 'chat');
+
+  let taskId: string | null = null;
+  if (cloudUrl && eventSecret && tenantId) {
+    taskId = await createCloudTask({
+      tenantId,
+      cloudUrl,
+      eventSecret,
+      channel,
+      origin,
+      chatJid: input.chatJid,
+      title: input.prompt.slice(0, 80),
+    });
+    if (taskId) {
+      logger.info({ group: group.name, taskId }, 'Cloud task created');
+    }
+  }
+
   return new Promise((resolve) => {
     const child = spawn('node', [agentRunnerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -166,6 +253,12 @@ export async function runRailwayAgent(
         LOG_LEVEL: process.env.LOG_LEVEL || '',
         NODE_ENV: process.env.NODE_ENV || '',
         RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT || '',
+        // Cloud task context for artifact uploader
+        TASK_ID: taskId || '',
+        TENANT_ID: tenantId,
+        NANOCLAW_CLOUD_URL: cloudUrl,
+        NANOCLAW_EVENT_SECRET: eventSecret,
+        NANOCLAW_CHANNEL: channel,
       },
     });
 
@@ -374,6 +467,11 @@ export async function runRailwayAgent(
           error: `Railway agent exited with code ${code}: ${stderr.slice(-200)}`,
         });
         return;
+      }
+
+      // Patch cloud task to done (fire-and-forget)
+      if (taskId && cloudUrl && eventSecret && tenantId) {
+        patchCloudTask({ tenantId, taskId, cloudUrl, eventSecret, status: 'done' }).catch(() => {});
       }
 
       if (onOutput) {

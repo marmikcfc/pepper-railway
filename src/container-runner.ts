@@ -47,6 +47,9 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  channel?: string;
+  origin?: string; // 'chat' | 'dashboard'
+  taskId?: string; // set by railway-runner after task creation
 }
 
 export interface ContainerOutput {
