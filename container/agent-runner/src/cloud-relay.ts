@@ -154,6 +154,7 @@ function flushUnsyncedFromDb(): void {
           ? 'complete' : 'pending',
         agent_name: process.env.ASSISTANT_NAME || 'unknown',
         channel: 'unknown',
+        task_id: null,
         data: JSON.parse((row.data as string) || '{}'),
         tokens_used: (row.input_tokens as number) || null,
         cost_usd: (row.cost_usd as number) || null,
