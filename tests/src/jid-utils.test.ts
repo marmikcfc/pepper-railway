@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inferIsDM } from './jid-utils.js';
+import { inferIsDM } from '../../src/jid-utils.js';
 
 describe('inferIsDM', () => {
   // WhatsApp

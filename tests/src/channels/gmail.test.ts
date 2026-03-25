@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock registry (registerChannel runs at import time)
-vi.mock('./registry.js', () => ({ registerChannel: vi.fn() }));
+vi.mock('../../../src/channels/registry.js', () => ({ registerChannel: vi.fn() }));
 
-import { GmailChannel, GmailChannelOpts } from './gmail.js';
+import { GmailChannel, GmailChannelOpts } from '../../../src/channels/gmail.js';
 
 function makeOpts(overrides?: Partial<GmailChannelOpts>): GmailChannelOpts {
   return {

@@ -3,15 +3,15 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 
 const mockEnv: Record<string, string> = {};
-vi.mock('./env.js', () => ({
+vi.mock('../../src/env.js', () => ({
   readEnvFile: vi.fn(() => ({ ...mockEnv })),
 }));
 
-vi.mock('./logger.js', () => ({
+vi.mock('../../src/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy } from './credential-proxy.js';
+import { startCredentialProxy } from '../../src/credential-proxy.js';
 
 function makeRequest(
   port: number,

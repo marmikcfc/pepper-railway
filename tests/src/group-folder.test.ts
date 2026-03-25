@@ -6,7 +6,7 @@ import {
   isValidGroupFolder,
   resolveGroupFolderPath,
   resolveGroupIpcPath,
-} from './group-folder.js';
+} from '../../src/group-folder.js';
 
 describe('group folder validation', () => {
   it('accepts normal group folder names', () => {

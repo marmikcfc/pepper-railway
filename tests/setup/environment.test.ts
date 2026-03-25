@@ -11,7 +11,7 @@ import Database from 'better-sqlite3';
 
 describe('environment detection', () => {
   it('detects platform correctly', async () => {
-    const { getPlatform } = await import('./platform.js');
+    const { getPlatform } = await import('../../setup/platform.js');
     const platform = getPlatform();
     expect(['macos', 'linux', 'unknown']).toContain(platform);
   });
@@ -98,7 +98,7 @@ describe('credentials detection', () => {
 
 describe('Docker detection logic', () => {
   it('commandExists returns boolean', async () => {
-    const { commandExists } = await import('./platform.js');
+    const { commandExists } = await import('../../setup/platform.js');
     expect(typeof commandExists('docker')).toBe('boolean');
     expect(typeof commandExists('nonexistent_binary_xyz')).toBe('boolean');
   });

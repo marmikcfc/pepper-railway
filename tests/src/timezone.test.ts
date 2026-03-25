@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { formatLocalTime } from './timezone.js';
+import { formatLocalTime } from '../../src/timezone.js';
 
 // --- formatLocalTime ---
 

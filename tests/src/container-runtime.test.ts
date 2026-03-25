@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock logger
-vi.mock('./logger.js', () => ({
+vi.mock('../../src/logger.js', () => ({
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -22,8 +22,8 @@ import {
   stopContainer,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
-} from './container-runtime.js';
-import { logger } from './logger.js';
+} from '../../src/container-runtime.js';
+import { logger } from '../../src/logger.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
