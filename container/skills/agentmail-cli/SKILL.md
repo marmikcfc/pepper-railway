@@ -3,6 +3,21 @@ name: agentmail-cli
 description: Send and receive emails programmatically using the AgentMail CLI. Use when agents need to manage inboxes, send/receive emails, handle threads, drafts, webhooks, and domains via command line.
 ---
 
+## Credentials check
+
+If `AGENTMAIL_API_KEY` is not set, tell the user:
+> "To use email, connect AgentMail in Settings → Integrations at your NanoClaw Cloud dashboard."
+
+---
+
+## When a webhook event arrives
+
+When you receive a message like `[agentmail webhook: new_email]`, a new email has arrived in your inbox. The payload contains the full email details including `inboxId`, `messageId`, `from`, `subject`, and `text`/`html`.
+
+Read the payload, understand the email, then reply or take action using the AgentMail API.
+
+---
+
 # AgentMail CLI
 
 Use the `agentmail` CLI to send and receive emails programmatically. Requires `AGENTMAIL_API_KEY` environment variable.
