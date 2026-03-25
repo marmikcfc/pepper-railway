@@ -584,6 +584,11 @@ async function main(): Promise<void> {
   if (containerInput.secrets) {
     for (const [key, value] of Object.entries(containerInput.secrets)) {
       sdkEnv[key] = value;
+      // Inject CLI tool credentials into process.env so Bash child
+      // processes inherit them (SDK env option only affects API calls).
+      if (CLI_PASSTHROUGH_VARS.has(key)) {
+        process.env[key] = value;
+      }
     }
     // Initialize telemetry (Langfuse + SQLite)
     await telemetry.init({
