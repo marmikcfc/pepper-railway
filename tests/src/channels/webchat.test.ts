@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHmac } from 'crypto';
 import { WebchatChannel } from '../../../src/channels/webchat.js';
 
 const CLOUD_URL = 'https://cloud.example.com';
@@ -71,6 +72,12 @@ describe('WebchatChannel', () => {
     expect(headers['X-Event-Signature']).toBeDefined();
     expect(typeof headers['X-Event-Signature']).toBe('string');
     expect(headers['X-Event-Signature']).toHaveLength(64); // hex HMAC-SHA256
+
+    // Verify the actual HMAC value is correct by recomputing it from the request body
+    const expectedSig = createHmac('sha256', EVENT_SECRET)
+      .update(init?.body as string)
+      .digest('hex');
+    expect(headers['X-Event-Signature']).toBe(expectedSig);
   });
 
   it('sendMessage logs error and does not throw if Cloud returns error', async () => {
@@ -80,5 +87,37 @@ describe('WebchatChannel', () => {
     channel.currentTraceId = 'trace-abc';
     // Should not throw — errors are logged, not propagated
     await expect(channel.sendMessage('admin@nanoclaw', 'Hi')).resolves.toBeUndefined();
+  });
+
+  it('sendMessage does not throw when fetch network error occurs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network failure'));
+    channel.currentTraceId = 'trace-abc';
+    // Should not throw — network errors are caught and logged
+    await expect(channel.sendMessage('admin@nanoclaw', 'Hi')).resolves.toBeUndefined();
+  });
+});
+
+describe('WebchatChannel self-registration', () => {
+  it('registers under "webchat" key', async () => {
+    // Import registry functions to verify the module has registered itself
+    const { getChannelFactory, getRegisteredChannelNames } = await import(
+      '../../../src/channels/registry.js'
+    );
+
+    // Verify 'webchat' is in the registered channel names
+    const registeredNames = getRegisteredChannelNames();
+    expect(registeredNames).toContain('webchat');
+
+    // Verify getChannelFactory returns a factory for 'webchat'
+    const factory = getChannelFactory('webchat');
+    expect(factory).toBeDefined();
+
+    // Verify the factory creates a WebchatChannel instance
+    const instance = factory!({
+      onMessage: vi.fn(),
+      onChatMetadata: vi.fn(),
+      registeredGroups: vi.fn().mockReturnValue({}),
+    });
+    expect(instance).toBeInstanceOf(WebchatChannel);
   });
 });
