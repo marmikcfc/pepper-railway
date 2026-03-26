@@ -1,4 +1,5 @@
 import { ChildProcess } from 'child_process';
+import { createHmac } from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
@@ -11,6 +12,7 @@ import {
 import {
   getAllTasks,
   getDueTasks,
+  getEarliestActiveTask,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -60,6 +62,38 @@ export function computeNextRun(task: ScheduledTask): string | null {
   }
 
   return null;
+}
+
+/**
+ * Reports the earliest upcoming task time to the cloud's tenant_task_schedule
+ * shadow table so the global Vercel cron knows which tenants to ping.
+ * Fire-and-forget — a failure here never blocks task mutations.
+ */
+export async function reportScheduleHint(): Promise<void> {
+  const cloudUrl = process.env.NANOCLAW_CLOUD_URL;
+  const tenantId = process.env.TENANT_ID;
+  const secret = process.env.NANOCLAW_EVENT_SECRET;
+
+  if (!cloudUrl || !tenantId || !secret) {
+    return; // local dev without cloud — skip silently
+  }
+
+  const task = getEarliestActiveTask();
+  const body = JSON.stringify({ earliest_next_run: task?.next_run ?? null });
+  const signature = createHmac('sha256', secret).update(body).digest('hex');
+
+  try {
+    await fetch(`${cloudUrl}/api/tasks/${tenantId}/schedule-hint`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-event-signature': signature,
+      },
+      body,
+    });
+  } catch {
+    // Intentionally swallowed — cloud availability must not affect task mutations
+  }
 }
 
 export interface SchedulerDependencies {
@@ -233,6 +267,7 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
+  void reportScheduleHint();
 }
 
 export async function runDueTasks(deps: SchedulerDependencies): Promise<void> {
