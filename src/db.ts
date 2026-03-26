@@ -534,6 +534,17 @@ export function getDueTasks(): ScheduledTask[] {
     .all(now) as ScheduledTask[];
 }
 
+export function getEarliestActiveTask(): ScheduledTask | null {
+  return db
+    .prepare(
+      `SELECT * FROM scheduled_tasks
+       WHERE status = 'active' AND next_run IS NOT NULL
+       ORDER BY next_run ASC
+       LIMIT 1`,
+    )
+    .get() as ScheduledTask | null;
+}
+
 export function updateTaskAfterRun(
   id: string,
   nextRun: string | null,
