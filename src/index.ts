@@ -272,10 +272,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       group: group.name,
       isDM,
       messageCount: missedMessages.length,
-      messages: missedMessages.map((m) => ({
-        sender: m.sender,
-        content: m.content.slice(0, 200),
-      })),
     },
     'Incoming messages',
   );
@@ -292,8 +288,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       {
         group: group.name,
         hasTrigger,
-        triggerPattern: TRIGGER_PATTERN.toString(),
-        messageContents: missedMessages.map((m) => m.content.slice(0, 100)),
       },
       hasTrigger ? 'Trigger found — invoking agent' : 'No trigger found — skipping agent',
     );
