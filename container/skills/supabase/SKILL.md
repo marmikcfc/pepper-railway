@@ -1,6 +1,51 @@
 ---
 name: supabase
 description: Core Supabase CLI, migrations, RLS, Edge Functions
+inputs:
+  - name: SUPABASE_ACCESS_TOKEN
+    description: Personal access token — required for management API (projects list, link, deploy)
+  - name: SUPABASE_DB_PASSWORD
+    description: Database password — required for direct postgres commands (inspect db, db execute, db dump)
+  - name: SUPABASE_URL
+    description: Project URL (https://<ref>.supabase.co)
+---
+
+## Credentials check
+
+Before running any Supabase commands, check what is available:
+
+```bash
+# Extract project ref from URL
+PROJECT_REF=$(echo "$SUPABASE_URL" | sed 's|https://||' | cut -d. -f1)
+echo "Project ref: $PROJECT_REF"
+echo "Access token set: $([ -n "$SUPABASE_ACCESS_TOKEN" ] && echo yes || echo NO)"
+echo "DB password set: $([ -n "$SUPABASE_DB_PASSWORD" ] && echo yes || echo NO)"
+```
+
+- `SUPABASE_ACCESS_TOKEN` — used by management API commands: `projects list`, `link`, `functions deploy`, `migration list`
+- `SUPABASE_DB_PASSWORD` — used by direct postgres commands: `inspect db`, `db execute`, `db dump`, `db push`
+- If `SUPABASE_DB_PASSWORD` is not set, tell the user: *"To run database queries, add SUPABASE_DB_PASSWORD in Railway → Service → Variables. Get it from Supabase Dashboard → Project Settings → Database → Database password."*
+
+## Non-interactive usage (CI / Railway)
+
+These commands work with env vars only — no `supabase login` or `supabase link` needed:
+
+```bash
+# List tables / inspect schema
+PROJECT_REF=$(echo "$SUPABASE_URL" | sed 's|https://||' | cut -d. -f1)
+supabase inspect db table-sizes --project-ref $PROJECT_REF
+
+# Run arbitrary SQL
+echo "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;" \
+  | supabase db execute --project-ref $PROJECT_REF --stdin
+
+# Dump full schema
+supabase db dump --schema public --project-ref $PROJECT_REF
+
+# List all projects (management API only, no DB password needed)
+supabase projects list
+```
+
 ---
 
 # Supabase Core Skill

@@ -219,7 +219,8 @@ const CLI_PASSTHROUGH_VARS = new Set([
   'AWS_DEFAULT_REGION',
   'SUPABASE_ACCESS_TOKEN',
   'SUPABASE_URL',
-  'SUPABASE_SERVICE_KEY',
+  'SUPABASE_DB_PASSWORD',    // needed by: supabase inspect db, db execute, db dump (direct postgres)
+  'SUPABASE_SERVICE_KEY',    // kept for REST API usage
 ]);
 
 function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {

@@ -21,7 +21,12 @@ export const INTEGRATIONS: Integration[] = [
   },
   {
     id: 'supabase',
-    envVars: { url: 'SUPABASE_URL', serviceKey: 'SUPABASE_SERVICE_KEY', accessToken: 'SUPABASE_ACCESS_TOKEN' },
+    envVars: {
+      url: 'SUPABASE_URL',
+      accessToken: 'SUPABASE_ACCESS_TOKEN', // management API (projects list, link)
+      dbPassword: 'SUPABASE_DB_PASSWORD',   // direct postgres (inspect db, db execute, db dump)
+      serviceKey: 'SUPABASE_SERVICE_KEY',   // REST API (optional)
+    },
     implementation: { cli: { bin: 'supabase' } },
   },
   {
