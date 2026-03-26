@@ -57,10 +57,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Supabase CLI
+# Supabase CLI (2026-03-26)
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSL "https://github.com/supabase/cli/releases/latest/download/supabase_linux_${ARCH}.tar.gz" \
-    | tar xz -C /usr/local/bin supabase
+    | tar xz -C /usr/local/bin supabase \
+  && supabase --version
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
