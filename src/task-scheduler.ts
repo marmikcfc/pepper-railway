@@ -235,6 +235,25 @@ async function runTask(
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
+export async function runDueTasks(deps: SchedulerDependencies): Promise<void> {
+  const dueTasks = getDueTasks();
+  if (dueTasks.length > 0) {
+    logger.info({ count: dueTasks.length }, 'Found due tasks');
+  }
+
+  for (const task of dueTasks) {
+    // Re-check task status in case it was paused/cancelled
+    const currentTask = getTaskById(task.id);
+    if (!currentTask || currentTask.status !== 'active') {
+      continue;
+    }
+
+    deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
+      runTask(currentTask, deps),
+    );
+  }
+}
+
 let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
@@ -247,22 +266,7 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
-      const dueTasks = getDueTasks();
-      if (dueTasks.length > 0) {
-        logger.info({ count: dueTasks.length }, 'Found due tasks');
-      }
-
-      for (const task of dueTasks) {
-        // Re-check task status in case it was paused/cancelled
-        const currentTask = getTaskById(task.id);
-        if (!currentTask || currentTask.status !== 'active') {
-          continue;
-        }
-
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
-          runTask(currentTask, deps),
-        );
-      }
+      await runDueTasks(deps);
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');
     }
