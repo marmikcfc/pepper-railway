@@ -114,6 +114,13 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add attachments column if it doesn't exist (migration for multimodal support)
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT NULL`);
+  } catch {
+    /* column already exists */
+  }
+
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -289,7 +296,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_id, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -300,6 +307,7 @@ export function storeMessage(msg: NewMessage): void {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
     msg.thread_id || null,
+    msg.attachments?.length ? JSON.stringify(msg.attachments) : null,
   );
 }
 
@@ -330,6 +338,19 @@ export function storeMessageDirect(msg: {
   );
 }
 
+/** Parse the JSON `attachments` column back into ProcessedAttachment[]. */
+function deserializeAttachments(row: NewMessage): NewMessage {
+  const raw = (row as unknown as Record<string, unknown>).attachments;
+  if (typeof raw === 'string' && raw) {
+    try {
+      row.attachments = JSON.parse(raw);
+    } catch {
+      /* malformed JSON — ignore */
+    }
+  }
+  return row;
+}
+
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
@@ -344,7 +365,7 @@ export function getNewMessages(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, attachments
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
         AND is_bot_message = 0 AND content NOT LIKE ?
@@ -354,9 +375,10 @@ export function getNewMessages(
     ) ORDER BY timestamp
   `;
 
-  const rows = db
+  const rows = (db
     .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`, limit) as NewMessage[];
+    .all(lastTimestamp, ...jids, `${botPrefix}:%`, limit) as NewMessage[])
+    .map(deserializeAttachments);
 
   let newTimestamp = lastTimestamp;
   for (const row of rows) {
@@ -377,7 +399,7 @@ export function getMessagesSince(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id, attachments
       FROM messages
       WHERE chat_jid = ? AND timestamp > ?
         AND is_bot_message = 0 AND content NOT LIKE ?
@@ -386,9 +408,10 @@ export function getMessagesSince(
       LIMIT ?
     ) ORDER BY timestamp
   `;
-  return db
+  return (db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
+    .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[])
+    .map(deserializeAttachments);
 }
 
 /**

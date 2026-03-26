@@ -15,3 +15,6 @@ import './telegram.js';
 
 // whatsapp
 import './whatsapp.js';
+
+// webchat
+import './webchat.js';

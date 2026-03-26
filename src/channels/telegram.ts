@@ -3,6 +3,7 @@ import { Bot } from 'grammy';
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { downloadBuffer, processImage, processPdf } from '../media.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -134,8 +135,9 @@ export class TelegramChannel implements Channel {
       );
     });
 
-    // Handle non-text messages with placeholders so the agent knows something was sent
-    const storeNonText = (ctx: any, placeholder: string) => {
+    // Handle non-text messages with placeholders so the agent knows something was sent.
+    // Pass optional ProcessedAttachment[] for media types we can process.
+    const storeNonText = (ctx: any, placeholder: string, attachments?: import('../media.js').ProcessedAttachment[]) => {
       const chatJid = `tg:${ctx.chat.id}`;
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
@@ -163,16 +165,48 @@ export class TelegramChannel implements Channel {
         content: `${placeholder}${caption}`,
         timestamp,
         is_from_me: false,
+        attachments,
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const token = process.env.TELEGRAM_BOT_TOKEN!;
+      try {
+        // getFile returns the highest-res photo (last in array)
+        const photos = ctx.message.photo!;
+        const fileId = photos[photos.length - 1].file_id;
+        const file = await ctx.api.getFile(fileId);
+        const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        const buffer = await downloadBuffer(url);
+        const att = await processImage(buffer, 'image/jpeg');
+        const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+        storeNonText(ctx, `[Image]${caption}`, [att]);
+      } catch (err) {
+        logger.warn({ err }, 'Telegram: failed to process photo, using placeholder');
+        storeNonText(ctx, '[Photo]');
+      }
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+    this.bot.on('message:document', async (ctx) => {
+      const doc = ctx.message.document!;
+      const name = doc.file_name || 'file';
+      const token = process.env.TELEGRAM_BOT_TOKEN!;
+      if (doc.mime_type === 'application/pdf') {
+        try {
+          const file = await ctx.api.getFile(doc.file_id);
+          const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+          const buffer = await downloadBuffer(url);
+          const att = processPdf(buffer, name);
+          storeNonText(ctx, `[PDF: ${name}]`, [att]);
+        } catch (err) {
+          logger.warn({ err, name }, 'Telegram: failed to process PDF, using placeholder');
+          storeNonText(ctx, `[Document: ${name}]`);
+        }
+      } else {
+        storeNonText(ctx, `[Document: ${name}]`);
+      }
     });
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';

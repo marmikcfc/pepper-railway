@@ -20,8 +20,16 @@ import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@
 import { fileURLToPath } from 'url';
 import * as telemetry from './telemetry.js';
 
+interface ProcessedAttachment {
+  type: 'image' | 'document';
+  mimeType: string;
+  base64: string;
+  filename?: string;
+}
+
 interface ContainerInput {
   prompt: string;
+  attachments?: ProcessedAttachment[];
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
@@ -49,9 +57,15 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type SDKMessageContent = string | Array<{
+  type: 'text' | 'image' | 'document';
+  text?: string;
+  source?: { type: 'base64'; media_type: string; data: string };
+}>;
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: SDKMessageContent };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -73,10 +87,10 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(text: string): void {
+  push(content: SDKMessageContent): void {
     this.queue.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -379,7 +393,7 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 async function runQuery(
-  prompt: string,
+  initialContent: SDKMessageContent,
   sessionId: string | undefined,
   mcpServerPath: string,
   containerInput: ContainerInput,
@@ -387,7 +401,7 @@ async function runQuery(
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  stream.push(prompt);
+  stream.push(initialContent);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -464,7 +478,8 @@ async function runQuery(
 
   const modelOverride = sdkEnv.ANTHROPIC_MODEL;
 
-  telemetry.onQueryStart(prompt, sessionId);
+  const promptForTelemetry = typeof initialContent === 'string' ? initialContent : (initialContent.find((b) => b.type === 'text') as { text?: string })?.text || '(multimodal)';
+  telemetry.onQueryStart(promptForTelemetry, sessionId);
 
   for await (const message of query({
     prompt: stream,
@@ -629,16 +644,27 @@ async function main(): Promise<void> {
   // Clean up stale _close sentinel from previous container runs
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
-  // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
+  // Build initial content — multimodal if attachments present, plain text otherwise
+  let promptText = containerInput.prompt;
   if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
+    promptText = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${promptText}`;
   }
   const pending = drainIpcInput();
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
+    promptText += '\n' + pending.join('\n');
   }
+
+  const initialContent: SDKMessageContent = containerInput.attachments?.length
+    ? [
+        { type: 'text' as const, text: promptText },
+        ...containerInput.attachments.map((att) =>
+          att.type === 'image'
+            ? { type: 'image' as const, source: { type: 'base64' as const, media_type: att.mimeType, data: att.base64 } }
+            : { type: 'document' as const, source: { type: 'base64' as const, media_type: att.mimeType, data: att.base64 } }
+        ),
+      ]
+    : promptText;
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
@@ -646,7 +672,9 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      // First query uses multimodal initialContent; IPC followups are always plain text
+      const queryContent = resumeAt === undefined ? initialContent : promptText;
+      const queryResult = await runQuery(queryContent, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -675,7 +703,7 @@ async function main(): Promise<void> {
       }
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
+      promptText = nextMessage;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

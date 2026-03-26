@@ -74,7 +74,8 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setAllowedNumberFns, setChannels, startApiServer } from './api-server.js';
+import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer } from './api-server.js';
+import type { WebchatChannel } from './channels/webchat.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -144,6 +145,27 @@ function loadState(): void {
   );
 }
 
+/**
+ * Ensures the webchat admin channel (admin@nanoclaw) is registered as a group.
+ * Called after loadState() so we can check if it already exists.
+ * admin@nanoclaw never came from a real channel — it must be seeded explicitly.
+ */
+function bootstrapWebchatGroup(): void {
+  if (registeredGroups['admin@nanoclaw']) return; // Already registered (persists across restarts)
+
+  const now = new Date().toISOString();
+  storeChatMetadata('admin@nanoclaw', now, 'Dashboard', 'webchat', false);
+  registerGroup('admin@nanoclaw', {
+    name: 'Dashboard',
+    folder: 'webchat',
+    trigger: '',
+    added_at: now,
+    requiresTrigger: false,
+    isDM: true,
+  });
+  logger.info('Bootstrapped admin@nanoclaw webchat group');
+}
+
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
@@ -211,6 +233,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
+
+  // Consume incomingTraceId for this run. api-server writes incomingTraceId
+  // (not currentTraceId) so the snapshot here never races with the restore
+  // that happens just before sendMessage(). A new webhook arriving mid-run
+  // will write its traceId into incomingTraceId and it will be correctly
+  // consumed by the next call to processGroupMessages.
+  const webchatTraceId = channel.ownsJid('admin@nanoclaw')
+    ? (() => {
+        const wc = channel as WebchatChannel;
+        const id = wc.incomingTraceId;
+        wc.incomingTraceId = null;
+        return id;
+      })()
+    : null;
 
   const isDM = group.isDM === true;
 
@@ -282,6 +318,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     prompt = formatMessages(missedMessages, TIMEZONE);
   }
 
+  // Collect attachments from all pending messages (first 5 to avoid huge payloads)
+  const attachments = missedMessages
+    .flatMap((m) => m.attachments ?? [])
+    .slice(0, 5);
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -290,7 +331,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { group: group.name, messageCount: missedMessages.length, attachmentCount: attachments.length },
     'Processing messages',
   );
 
@@ -312,7 +353,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, attachments.length ? attachments : undefined, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -331,6 +372,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         'Agent response',
       );
       if (text) {
+        // Restore the trace ID captured at the start of this run, right before
+        // sendMessage reads it synchronously. This is safe: JS is single-threaded,
+        // so no webhook can interleave between this set and sendMessage's first line.
+        if (webchatTraceId !== null && channel.ownsJid('admin@nanoclaw')) {
+          (channel as WebchatChannel).currentTraceId = webchatTraceId;
+        }
         await channel.sendMessage(chatJid, text);
         logger.info({ group: group.name, chatJid, textLength: text.length }, 'Response sent to user');
         outputSentToUser = true;
@@ -380,6 +427,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  attachments?: import('./media.js').ProcessedAttachment[],
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const sessionId = sessions[group.folder];
@@ -423,6 +471,7 @@ async function runAgent(
       group,
       {
         prompt,
+        attachments: attachments?.length ? attachments : undefined,
         sessionId,
         groupFolder: group.folder,
         chatJid,
@@ -622,6 +671,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  bootstrapWebchatGroup(); // Ensure admin@nanoclaw webchat group exists
   restoreRemoteControl();
 
   // Sync skills from lock file (re-clones registered repos so skills
@@ -754,6 +804,10 @@ async function main(): Promise<void> {
     startApiServer(Number(process.env.PORT));
   }
   setAllowedNumberFns(addAllowedWhatsAppNumber, removeAllowedWhatsAppNumber);
+  setWebchatFns(
+    (jid: string) => queue.enqueueMessageCheck(jid),
+    () => channels.find(c => c.name === 'webchat') as WebchatChannel | undefined,
+  );
 
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   // Channels connect concurrently so a slow channel (e.g. WhatsApp pairing) doesn't block others.
@@ -772,7 +826,7 @@ async function main(): Promise<void> {
     channels.push(channel);
     setChannels(channels);  // Update API server immediately so commands work during connect()
   }
-  if (connectableChannels.length === 0) {
+  if (connectableChannels.filter(c => c.name !== 'webchat').length === 0) {
     logger.fatal('No channels configured');
     process.exit(1);
   }
