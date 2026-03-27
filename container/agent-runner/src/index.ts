@@ -223,7 +223,7 @@ const CLI_PASSTHROUGH_VARS = new Set([
   'SUPABASE_ACCESS_TOKEN',   // management API (projects list, link)
   'SUPABASE_URL',
   'SUPABASE_DB_PASSWORD',    // direct postgres (inspect db, db execute, db dump)
-  'SUPABASE_SERVICE_KEY',    // REST API (optional)
+  'SUPABASE_SERVICE_ROLE_KEY', // REST API (optional)
   // Vercel
   'VERCEL_TOKEN',            // vercel CLI auth
   'VERCEL_ORG_ID',           // optional: pin team without --scope
