@@ -402,6 +402,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
       return true;
     }
+    // Notify the user so they aren't left hanging, then roll back the cursor.
+    try {
+      await channel.sendMessage(chatJid, "Something went wrong and I couldn't complete that. Please try again.");
+    } catch (sendErr) {
+      logger.warn({ group: group.name, err: sendErr }, 'Failed to send error notification to user');
+    }
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
