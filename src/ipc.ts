@@ -7,6 +7,7 @@ import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { logger } from './logger.js';
+import { reportScheduleHint } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -266,6 +267,7 @@ export async function processTaskIpc(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',
         );
+        void reportScheduleHint();
       }
       break;
 
@@ -278,6 +280,7 @@ export async function processTaskIpc(
             { taskId: data.taskId, sourceGroup },
             'Task paused via IPC',
           );
+          void reportScheduleHint();
         } else {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
@@ -296,6 +299,7 @@ export async function processTaskIpc(
             { taskId: data.taskId, sourceGroup },
             'Task resumed via IPC',
           );
+          void reportScheduleHint();
         } else {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
@@ -314,6 +318,7 @@ export async function processTaskIpc(
             { taskId: data.taskId, sourceGroup },
             'Task cancelled via IPC',
           );
+          void reportScheduleHint();
         } else {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
@@ -384,6 +389,7 @@ export async function processTaskIpc(
           { taskId: data.taskId, sourceGroup, updates },
           'Task updated via IPC',
         );
+        void reportScheduleHint();
       }
       break;
 

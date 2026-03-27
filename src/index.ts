@@ -70,11 +70,11 @@ import {
 import { syncMcpOnStartup } from './mcp-installer.js';
 import { syncSkillsOnStartup } from './skill-installer.js';
 import { syncIntegrationsOnStartup } from './integrations/activator.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { startSchedulerLoop, runDueTasks } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer } from './api-server.js';
+import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer, setSchedulerTickFn } from './api-server.js';
 import type { WebchatChannel } from './channels/webchat.js';
 
 // Re-export for backwards compatibility during refactor
@@ -825,7 +825,7 @@ async function main(): Promise<void> {
 
   // Start subsystems immediately — they tolerate an empty channel list
   // via findChannel() null checks, and pick up channels as they connect.
-  startSchedulerLoop({
+  const schedulerDeps = {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
@@ -840,7 +840,14 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
-  });
+  };
+
+  // On Railway, the external cron service triggers task execution via HTTP.
+  // Locally, fall back to the in-process polling loop so dev still works.
+  setSchedulerTickFn(() => runDueTasks(schedulerDeps));
+  if (!IS_RAILWAY) {
+    startSchedulerLoop(schedulerDeps);
+  }
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);

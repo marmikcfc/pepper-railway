@@ -86,3 +86,9 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// URL of this service as seen from the Railway cron service (internal networking).
+// Example: http://nanoclaw.railway.internal:3000
+// Only needed by the cron-tick.ts script; not used by the main process.
+export const NANOCLAW_INTERNAL_URL =
+  process.env.NANOCLAW_INTERNAL_URL || '';

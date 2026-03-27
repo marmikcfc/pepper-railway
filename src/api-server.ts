@@ -31,6 +31,12 @@ export function setWebchatFns(
   _getWebchatChannel = getChannel;
 }
 
+let _schedulerTick: (() => Promise<void>) | undefined;
+
+export function setSchedulerTickFn(fn: () => Promise<void>): void {
+  _schedulerTick = fn;
+}
+
 let connectedChannels: Channel[] = [];
 const startTime = Date.now();
 
@@ -274,6 +280,19 @@ async function handleSendFile(body: unknown, res: http.ServerResponse): Promise<
   );
 }
 
+async function handleCronTick(_body: unknown, res: http.ServerResponse): Promise<void> {
+  if (!_schedulerTick) {
+    json(res, 503, { error: 'Scheduler not initialised' });
+    return;
+  }
+  // Fire-and-forget: task execution is async and long-running.
+  // Respond immediately so the cron service can exit cleanly.
+  json(res, 200, { ok: true });
+  _schedulerTick().catch((err) => {
+    logger.error({ err }, 'cron-tick handler error');
+  });
+}
+
 const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse) => Promise<void>> = {
   'refresh-pairing': handleRefreshPairing,
   'enable-integration': handleEnableIntegration,
@@ -282,6 +301,7 @@ const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse)
   'allow-number': handleAllowNumber,
   'remove-number': handleRemoveNumber,
   'send-file': handleSendFile,
+  'cron-tick': handleCronTick,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

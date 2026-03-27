@@ -4,6 +4,7 @@ import { _initTestDatabase, createTask, getTaskById } from '../../../src/db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
+  runDueTasks,
   startSchedulerLoop,
 } from '../../../src/task-scheduler.js';
 
@@ -50,6 +51,35 @@ describe('task scheduler', () => {
 
     const task = getTaskById('task-invalid-folder');
     expect(task?.status).toBe('paused');
+  });
+
+  it('runDueTasks enqueues active due tasks', async () => {
+    createTask({
+      id: 'due-task',
+      group_folder: 'main',
+      chat_jid: 'user@g.us',
+      prompt: 'check twitter',
+      schedule_type: 'once',
+      schedule_value: '2026-01-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    const enqueueTask = vi.fn();
+
+    await runDueTasks({
+      registeredGroups: () => ({}),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    expect(enqueueTask).toHaveBeenCalledOnce();
+    expect(enqueueTask.mock.calls[0][0]).toBe('user@g.us');
+    expect(enqueueTask.mock.calls[0][1]).toBe('due-task');
   });
 
   it('computeNextRun anchors interval tasks to scheduled time to prevent drift', () => {
