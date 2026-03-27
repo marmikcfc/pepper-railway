@@ -1,3 +1,4 @@
+import { type ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -829,9 +830,9 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
+    onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
+    sendMessage: async (jid: string, rawText: string) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
         logger.warn({ jid }, 'No channel owns JID, cannot send message');
