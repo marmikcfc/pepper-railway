@@ -543,6 +543,39 @@ async function runQuery(
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
+    // Log content details for assistant messages (tool calls + text)
+    if (message.type === 'assistant' && 'message' in message) {
+      const msg = (message as { message?: { content?: Array<{ type: string; text?: string; name?: string; input?: unknown; id?: string }> } }).message;
+      if (msg?.content) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_use') {
+            const inputStr = JSON.stringify(block.input || {});
+            log(`  → tool_use: ${block.name} | input: ${inputStr.slice(0, 200)}`);
+          } else if (block.type === 'text' && block.text) {
+            log(`  → text: ${block.text.slice(0, 200)}`);
+          }
+        }
+      }
+    }
+
+    // Log tool results (user messages carrying tool_result blocks)
+    if (message.type === 'user' && 'message' in message) {
+      const msg = (message as { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: string | Array<{ type: string; text?: string }>; is_error?: boolean }> } }).message;
+      if (msg?.content) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_result') {
+            const text = typeof block.content === 'string'
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.map(c => c.text || '').join('')
+                : '';
+            const status = block.is_error ? 'error' : 'ok';
+            log(`  ← tool_result [${block.tool_use_id?.slice(-8) || '?'}] status=${status}: ${text.slice(0, 200)}`);
+          }
+        }
+      }
+    }
+
     telemetry.onMessage(message as unknown as Record<string, unknown>);
 
     if (message.type === 'assistant' && 'uuid' in message) {
