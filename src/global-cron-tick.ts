@@ -36,7 +36,7 @@ try {
     process.exit(1);
   }
 
-  const data = await res.json();
+  const data = await res.json() as { pinged: number; errors: number; total: number };
   console.log(`global-cron-tick: ok — pinged=${data.pinged} errors=${data.errors} total=${data.total}`);
   process.exit(0);
 } catch (err) {
