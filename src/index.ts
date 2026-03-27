@@ -850,12 +850,10 @@ async function main(): Promise<void> {
     },
   };
 
-  // On Railway, the external cron service triggers task execution via HTTP.
-  // Locally, fall back to the in-process polling loop so dev still works.
+  // In-process polling loop runs everywhere (60s precision for warm containers).
+  // External cron is a fallback that wakes idle Railway containers.
   setSchedulerTickFn(() => runDueTasks(schedulerDeps));
-  if (!IS_RAILWAY) {
-    startSchedulerLoop(schedulerDeps);
-  }
+  startSchedulerLoop(schedulerDeps);
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
