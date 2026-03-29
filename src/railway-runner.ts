@@ -36,23 +36,23 @@ function cloudHmac(secret: string, body: string): string {
   return createHmac('sha256', secret).update(body).digest('hex');
 }
 
-async function createCloudTask(opts: {
-  agentId: string;
-  cloudUrl: string;
-  eventSecret: string;
-  channel: string;
-  origin: string;
-  chatJid: string;
-  title?: string;
-}): Promise<string | null> {
+async function routeCloudTask(opts: {
+  agentId: string
+  cloudUrl: string
+  eventSecret: string
+  message: string
+  channel: string
+  origin: string
+  chatJid: string
+}): Promise<{ taskId: string | null; action: string; reasoning: string }> {
   const body = JSON.stringify({
-    title: opts.title,
+    message: opts.message,
     channel: opts.channel,
     origin: opts.origin,
     chat_jid: opts.chatJid,
-  });
+  })
   try {
-    const resp = await fetch(`${opts.cloudUrl}/api/tasks/${opts.agentId}/create`, {
+    const resp = await fetch(`${opts.cloudUrl}/api/tasks/${opts.agentId}/route`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -60,12 +60,16 @@ async function createCloudTask(opts: {
       },
       body,
       signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { task_id?: string };
-    return data.task_id ?? null;
-  } catch {
-    return null;
+    })
+    if (!resp.ok) {
+      logger.warn({ status: resp.status }, 'Task route call failed')
+      return { taskId: null, action: 'new', reasoning: 'Route call failed' }
+    }
+    const json = await resp.json() as { task_id: string; action: string; reasoning: string }
+    return { taskId: json.task_id, action: json.action, reasoning: json.reasoning }
+  } catch (err) {
+    logger.warn({ err }, 'Task route call threw')
+    return { taskId: null, action: 'new', reasoning: 'Route call threw' }
   }
 }
 
@@ -226,17 +230,18 @@ export async function runRailwayAgent(
 
   let taskId: string | null = null;
   if (cloudUrl && eventSecret && agentId) {
-    taskId = await createCloudTask({
+    const routed = await routeCloudTask({
       agentId,
       cloudUrl,
       eventSecret,
+      message: input.prompt,
       channel,
       origin,
       chatJid: input.chatJid,
-      title: input.prompt.slice(0, 80),
     });
+    taskId = routed.taskId;
     if (taskId) {
-      logger.info({ group: group.name, taskId }, 'Cloud task created');
+      logger.info({ group: group.name, taskId, action: routed.action, reasoning: routed.reasoning }, 'Task routed');
     }
   }
 
