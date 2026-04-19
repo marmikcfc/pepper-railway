@@ -1139,6 +1139,14 @@ async function main(): Promise<void> {
         (update) => (tgChannel as { handleUpdate(u: unknown): Promise<void> }).handleUpdate(update),
       ).catch((err) => logger.warn({ err }, 'telegram-drain failed'));
     }
+
+    const slackChannel = channels.find((ch) => ch.name === 'slack');
+    if (slackChannel && 'handleSlackEvent' in slackChannel) {
+      const { drainPendingSlackMessages } = await import('./slack-drain.js');
+      drainPendingSlackMessages(
+        (event) => (slackChannel as { handleSlackEvent(e: unknown): Promise<void> }).handleSlackEvent(event),
+      ).catch((err) => logger.warn({ err }, 'slack-drain failed'));
+    }
   }
 }
 
