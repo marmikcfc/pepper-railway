@@ -1,0 +1,10 @@
+{
+  "upstream": "gooseworks-ai/goose-skills/skills/capabilities/visual-brand-extractor",
+  "upstream_url": "https://github.com/gooseworks-ai/goose-skills/tree/main/skills/capabilities/visual-brand-extractor",
+  "tier": "prompt-only",
+  "forked_at": "2026-04-19",
+  "modified": false,
+  "changes": null,
+  "data_sources": [],
+  "cost_estimate_usd": null
+}
