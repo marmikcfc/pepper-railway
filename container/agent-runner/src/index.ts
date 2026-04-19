@@ -274,6 +274,19 @@ const CLI_PASSTHROUGH_VARS = new Set([
   // Model alias overrides — must land in process.env for Claude Code SDK to honor them
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  // Marketing data sources (platform keys — used by orth/exa/parallel wrappers via Bash)
+  'ORTHOGONAL_API_KEY',      // orth wrapper → Orthogonal unified API
+  'PARALLEL_API_KEY',        // parallel wrapper → Parallel deep research
+  // Cold email (B2B ICPs only)
+  'SMARTLEAD_API_KEY',       // smartlead-campaign-manager skill
+  // Ads APIs (opt-in per ICP)
+  'META_ACCESS_TOKEN',       // meta-ads-manager skill
+  'META_AD_ACCOUNT_ID',      // meta-ads-manager skill (non-secret but needed by curl)
+  'GOOGLE_ADS_DEVELOPER_TOKEN', // google-ads-manager skill
+  'GOOGLE_ADS_CLIENT_ID',    // google-ads-manager skill
+  'TWITTER_ADS_API_KEY',     // twitter-ads-manager skill
+  'TWITTER_ADS_SECRET',      // twitter-ads-manager skill
+  'TIKTOK_ADS_ACCESS_TOKEN', // tiktok-ads-manager skill
 ]);
 
 function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
