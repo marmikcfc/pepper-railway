@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Usage: parallel <endpoint> <json_body>
+# Example: parallel /task '{"query":"Research Y Combinator W26 batch companies","mode":"lite"}'
+# Calls Parallel API, logs cost to .data-costs.jsonl, outputs response to stdout
+
+set -euo pipefail
+
+ENDPOINT="${1:-}"
+BODY="${2:-{\}}"
+
+if [ -z "$ENDPOINT" ]; then
+  echo "Usage: parallel <endpoint> <json_body>" >&2
+  exit 1
+fi
+
+if [ -z "${PARALLEL_API_KEY:-}" ]; then
+  echo "Error: PARALLEL_API_KEY environment variable not set" >&2
+  exit 1
+fi
+
+RESPONSE=$(curl -s -X POST "https://api.parallel.ai${ENDPOINT}" \
+  -H "Authorization: Bearer $PARALLEL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+
+# Extract cost if present in response (Parallel includes it), default to 0.005 (Lite tier)
+PRICE_USD=$(echo "$RESPONSE" | grep -o '"cost":[0-9.]*' | head -1 | cut -d: -f2 || echo "0.005")
+PRICE_USD="${PRICE_USD:-0.005}"
+
+COST_FILE="${DATA_COSTS_FILE:-${WORKSPACE_GROUP:-/workspace/group}/.data-costs.jsonl}"
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "{\"ts\":\"$TS\",\"provider\":\"parallel\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":true}" >> "$COST_FILE" 2>/dev/null || true
+
+echo "$RESPONSE"

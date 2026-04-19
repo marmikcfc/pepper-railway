@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Usage: exa <endpoint> <json_body>
+# Example: exa /search '{"query":"OpenAI competitors","numResults":5}'
+# Calls Exa API, logs $0.007/query to .data-costs.jsonl, outputs response to stdout
+
+set -euo pipefail
+
+ENDPOINT="${1:-}"
+BODY="${2:-{\}}"
+
+if [ -z "$ENDPOINT" ]; then
+  echo "Usage: exa <endpoint> <json_body>" >&2
+  exit 1
+fi
+
+if [ -z "${EXA_API_KEY:-}" ]; then
+  echo "Error: EXA_API_KEY environment variable not set" >&2
+  exit 1
+fi
+
+RESPONSE=$(curl -s -X POST "https://api.exa.ai${ENDPOINT}" \
+  -H "Authorization: Bearer $EXA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$BODY")
+
+# Fixed per-query cost for Exa search
+PRICE_USD="0.007"
+COST_FILE="${DATA_COSTS_FILE:-${WORKSPACE_GROUP:-/workspace/group}/.data-costs.jsonl}"
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "{\"ts\":\"$TS\",\"provider\":\"exa\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":true}" >> "$COST_FILE" 2>/dev/null || true
+
+echo "$RESPONSE"

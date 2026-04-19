@@ -69,7 +69,10 @@ RUN ARCH=$(dpkg --print-architecture) \
 COPY container/bin/composio-tool /usr/local/bin/composio-tool
 COPY container/bin/x-search /usr/local/bin/x-search
 COPY container/bin/exa-search /usr/local/bin/exa-search
-RUN chmod +x /usr/local/bin/composio-tool /usr/local/bin/x-search /usr/local/bin/exa-search
+COPY container/bin/exa /usr/local/bin/exa
+COPY container/bin/parallel /usr/local/bin/parallel
+RUN chmod +x /usr/local/bin/composio-tool /usr/local/bin/x-search /usr/local/bin/exa-search \
+    /usr/local/bin/exa /usr/local/bin/parallel
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
@@ -77,6 +80,15 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
+
+# Install orth CLI wrapper (Pepper's cost-tracking Orthogonal CLI) from private pepper-skills repo.
+# GITHUB_TOKEN build arg must have repo scope. If not provided, orth is skipped gracefully.
+ARG GITHUB_TOKEN
+RUN if [ -n "$GITHUB_TOKEN" ]; then \
+      npm install -g "https://x-access-token:${GITHUB_TOKEN}@github.com/marmikcfc/pepper-skills.git#main"; \
+    else \
+      echo "Warning: GITHUB_TOKEN not set — orth CLI not installed"; \
+    fi
 
 # Copy agent-runner build output
 COPY --from=agent-builder /build/agent-runner/dist /agent-runner-dist
