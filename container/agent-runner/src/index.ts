@@ -703,6 +703,10 @@ async function runQuery(
 
   await telemetry.onQueryEnd();
 
+  // Flush any data API costs logged to .data-costs.jsonl during this query
+  const dataCostsPath = path.join(WORKSPACE_GROUP, '.data-costs.jsonl');
+  telemetry.logPendingApiCalls(dataCostsPath);
+
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 

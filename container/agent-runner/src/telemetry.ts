@@ -11,6 +11,7 @@
  */
 import type { Span, Tracer } from '@opentelemetry/api';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
 import type { AgentEvent, EventData } from './types.js';
 import * as cloudRelay from './cloud-relay.js';
 
@@ -694,5 +695,71 @@ function storeEvent(
     log(
       `SQLite write error: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+}
+
+/**
+ * Read any api_call entries from .data-costs.jsonl written during this query turn,
+ * emit them as api_call cloud events, and truncate the file.
+ * Called once after onQueryEnd() so all data API costs from a single query are batched.
+ */
+export function logPendingApiCalls(dataCostsPath: string): void {
+  try {
+    if (!fs.existsSync(dataCostsPath)) return;
+
+    const content = fs.readFileSync(dataCostsPath, 'utf8').trim();
+    if (!content) return;
+
+    const lines = content.split('\n').filter(Boolean);
+    for (const line of lines) {
+      let entry: { ts?: string; provider?: string; api?: string; path?: string; price_usd?: string; success?: boolean };
+      try { entry = JSON.parse(line); }
+      catch { continue; }
+
+      const provider = entry.provider ?? 'unknown';
+      const api = entry.api ?? entry.path ?? 'unknown';
+      const path = entry.path ?? '';
+      const priceUsd = parseFloat(entry.price_usd ?? '0') || 0;
+      const success = entry.success ?? true;
+      const scaledCost = priceUsd * 1.2;
+
+      const eventData: EventData = {
+        type: 'api_call',
+        provider,
+        api,
+        path,
+        price_usd: entry.price_usd ?? '0',
+        success,
+      };
+
+      storeEvent('api_call', eventData as unknown as Record<string, unknown>, querySessionId, `${provider}:${api}`, undefined, undefined, scaledCost);
+
+      if (currentTraceId) {
+        const eventId = randomUUID();
+        const event: AgentEvent = {
+          id: eventId,
+          agent_id: resolvedTenantId,
+          trace_id: currentTraceId,
+          parent_event_id: currentRootEventId,
+          seq: seqCounter++,
+          event_type: 'api_call',
+          status: 'complete',
+          agent_name: resolvedAgentName,
+          channel: agentChannel,
+          task_id: currentTaskId,
+          data: eventData,
+          tokens_used: null,
+          cost_usd: scaledCost,
+          duration_ms: null,
+          client_ts: new Date().toISOString(),
+        };
+        cloudRelay.push(event);
+      }
+    }
+
+    // Truncate the file after processing so we don't double-count on next turn
+    fs.writeFileSync(dataCostsPath, '');
+  } catch (err) {
+    log(`logPendingApiCalls error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
 }
