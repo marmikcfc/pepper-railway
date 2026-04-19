@@ -470,10 +470,51 @@ async function resolveSkillsShCommand(
  *
  * Returns the installed skill name(s), or null if the URL is not a skills.sh URL.
  */
+/**
+ * Install a skill from a raw GitHub SKILL.md URL.
+ * URL format: https://raw.githubusercontent.com/<owner>/<repo>/main/<path>/SKILL.md
+ * The skill name is derived from the parent directory of SKILL.md in the path.
+ * Returns the installed skill name, or null if the URL is not a raw GitHub SKILL.md URL.
+ */
+async function fetchRawSkillMd(
+  url: string,
+  skillsDir: string,
+): Promise<string | null> {
+  if (!url.match(/^https?:\/\/raw\.githubusercontent\.com\//)) return null;
+  if (!url.endsWith('/SKILL.md')) return null;
+
+  // Derive skill name from the parent directory in the path
+  // e.g. .../main/skills/copywriting/SKILL.md → "copywriting"
+  const parts = url.split('/');
+  const skillName = parts[parts.length - 2];
+  if (!skillName) return null;
+
+  let content: string;
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': 'pepper-skill-installer' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    content = await res.text();
+  } catch (err) {
+    throw new Error(`Failed to download SKILL.md from ${url}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const destDir = path.join(skillsDir, skillName);
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.writeFileSync(path.join(destDir, 'SKILL.md'), content);
+
+  logger.info({ skill: skillName, url }, 'Installed skill from raw GitHub SKILL.md URL');
+  return skillName;
+}
+
 async function fetchSkillDirect(
   url: string,
   skillsDir: string,
 ): Promise<string | null> {
+  // Branch 1: raw GitHub SKILL.md direct download
+  const rawResult = await fetchRawSkillMd(url, skillsDir);
+  if (rawResult !== null) return rawResult;
+
+  // Branch 2: skills.sh page scraping → npx skills add
   if (!url.match(/^https?:\/\/skills\.sh\//)) return null;
 
   const resolved = await resolveSkillsShCommand(url);
