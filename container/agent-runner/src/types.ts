@@ -5,6 +5,7 @@ export const EventTypes = [
   'query_start', 'reasoning', 'tool_call', 'tool_result',
   'subagent_start', 'subagent_end', 'response', 'error', 'artifact',
   'webchat_user_message', 'webchat_agent_message',
+  'api_call',
 ] as const;
 
 export type EventType = (typeof EventTypes)[number];
@@ -30,7 +31,15 @@ export type EventData =
       size_bytes: number;
     }
   | { type: 'webchat_user_message'; text: string }
-  | { type: 'webchat_agent_message'; text: string };
+  | { type: 'webchat_agent_message'; text: string }
+  | {
+      type: 'api_call';
+      provider: string;     // 'orthogonal' | 'exa' | 'parallel' | 'smartlead' | 'meta_ads'
+      api: string;          // sub-provider for Orthogonal (e.g. 'apollo'), or endpoint path for others
+      path: string;         // API endpoint path (e.g. '/v1/people/match')
+      price_usd: string;    // cost in USD as string (e.g. '0.03') — matches @orth/sdk format
+      success: boolean;
+    };
 
 export interface AgentEvent {
   id: string;
