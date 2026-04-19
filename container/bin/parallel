@@ -18,10 +18,18 @@ if [ -z "${PARALLEL_API_KEY:-}" ]; then
   exit 1
 fi
 
-RESPONSE=$(curl -s -X POST "https://api.parallel.ai${ENDPOINT}" \
+# Capture both response body and HTTP status code
+HTTP_STATUS=$(curl -s -o /tmp/parallel_response_$$ -w "%{http_code}" -X POST "https://api.parallel.ai${ENDPOINT}" \
   -H "Authorization: Bearer $PARALLEL_API_KEY" \
   -H "Content-Type: application/json" \
   -d "$BODY")
+RESPONSE=$(cat /tmp/parallel_response_$$)
+rm -f /tmp/parallel_response_$$
+
+SUCCESS="true"
+if [ "$HTTP_STATUS" -ge 400 ] 2>/dev/null; then
+  SUCCESS="false"
+fi
 
 # Extract cost if present in response (Parallel includes it), default to 0.005 (Lite tier)
 PRICE_USD=$(echo "$RESPONSE" | grep -o '"cost":[0-9.]*' | head -1 | cut -d: -f2 || echo "0.005")
@@ -29,6 +37,6 @@ PRICE_USD="${PRICE_USD:-0.005}"
 
 COST_FILE="${DATA_COSTS_FILE:-${WORKSPACE_GROUP:-/workspace/group}/.data-costs.jsonl}"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-echo "{\"ts\":\"$TS\",\"provider\":\"parallel\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":true}" >> "$COST_FILE" 2>/dev/null || true
+echo "{\"ts\":\"$TS\",\"provider\":\"parallel\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":$SUCCESS}" >> "$COST_FILE" 2>/dev/null || true
 
 echo "$RESPONSE"

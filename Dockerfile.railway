@@ -82,12 +82,15 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 RUN npm install -g agent-browser @anthropic-ai/claude-code
 
 # Install orth CLI wrapper (Pepper's cost-tracking Orthogonal CLI) from private pepper-skills repo.
-# GITHUB_TOKEN build arg must have repo scope. If not provided, orth is skipped gracefully.
-ARG GITHUB_TOKEN
-RUN if [ -n "$GITHUB_TOKEN" ]; then \
-      npm install -g "https://x-access-token:${GITHUB_TOKEN}@github.com/marmikcfc/pepper-skills.git#main"; \
+# Uses BuildKit secret mount so the token is never baked into image layer history.
+# Build with: docker buildx build --secret id=github_token,env=GITHUB_TOKEN ...
+# If the secret is absent, orth is skipped gracefully.
+RUN --mount=type=secret,id=github_token \
+    TOKEN=$(cat /run/secrets/github_token 2>/dev/null || true); \
+    if [ -n "$TOKEN" ]; then \
+      npm install -g "https://x-access-token:${TOKEN}@github.com/marmikcfc/pepper-skills.git#main"; \
     else \
-      echo "Warning: GITHUB_TOKEN not set — orth CLI not installed"; \
+      echo "Warning: github_token secret not set — orth CLI not installed"; \
     fi
 
 # Copy agent-runner build output

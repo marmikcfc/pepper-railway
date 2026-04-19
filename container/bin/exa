@@ -18,15 +18,23 @@ if [ -z "${EXA_API_KEY:-}" ]; then
   exit 1
 fi
 
-RESPONSE=$(curl -s -X POST "https://api.exa.ai${ENDPOINT}" \
+# Capture both response body and HTTP status code
+HTTP_STATUS=$(curl -s -o /tmp/exa_response_$$ -w "%{http_code}" -X POST "https://api.exa.ai${ENDPOINT}" \
   -H "Authorization: Bearer $EXA_API_KEY" \
   -H "Content-Type: application/json" \
   -d "$BODY")
+RESPONSE=$(cat /tmp/exa_response_$$)
+rm -f /tmp/exa_response_$$
+
+SUCCESS="true"
+if [ "$HTTP_STATUS" -ge 400 ] 2>/dev/null; then
+  SUCCESS="false"
+fi
 
 # Fixed per-query cost for Exa search
 PRICE_USD="0.007"
 COST_FILE="${DATA_COSTS_FILE:-${WORKSPACE_GROUP:-/workspace/group}/.data-costs.jsonl}"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-echo "{\"ts\":\"$TS\",\"provider\":\"exa\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":true}" >> "$COST_FILE" 2>/dev/null || true
+echo "{\"ts\":\"$TS\",\"provider\":\"exa\",\"path\":\"$ENDPOINT\",\"price_usd\":\"$PRICE_USD\",\"success\":$SUCCESS}" >> "$COST_FILE" 2>/dev/null || true
 
 echo "$RESPONSE"
