@@ -66,13 +66,16 @@ RUN ARCH=$(dpkg --print-architecture) \
   && supabase --version
 
 # CLI tools (lightweight API wrappers)
+# orth is pre-built from marmikcfc/pepper-skills and vendored here — no token needed at build time.
+# To update: cd pepper-skills && npm run build && cp dist/orth.js pepper-railway/container/bin/orth
 COPY container/bin/composio-tool /usr/local/bin/composio-tool
 COPY container/bin/x-search /usr/local/bin/x-search
 COPY container/bin/exa-search /usr/local/bin/exa-search
 COPY container/bin/exa /usr/local/bin/exa
 COPY container/bin/parallel /usr/local/bin/parallel
+COPY container/bin/orth /usr/local/bin/orth
 RUN chmod +x /usr/local/bin/composio-tool /usr/local/bin/x-search /usr/local/bin/exa-search \
-    /usr/local/bin/exa /usr/local/bin/parallel
+    /usr/local/bin/exa /usr/local/bin/parallel /usr/local/bin/orth
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
@@ -80,18 +83,6 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
-
-# Install orth CLI wrapper (Pepper's cost-tracking Orthogonal CLI) from private pepper-skills repo.
-# Uses BuildKit secret mount so the token is never baked into image layer history.
-# Build with: docker buildx build --secret id=github_token,env=GITHUB_TOKEN ...
-# If the secret is absent, orth is skipped gracefully.
-RUN --mount=type=secret,id=github_token \
-    TOKEN=$(cat /run/secrets/github_token 2>/dev/null || true); \
-    if [ -n "$TOKEN" ]; then \
-      npm install -g "https://x-access-token:${TOKEN}@github.com/marmikcfc/pepper-skills.git#main"; \
-    else \
-      echo "Warning: github_token secret not set — orth CLI not installed"; \
-    fi
 
 # Copy agent-runner build output
 COPY --from=agent-builder /build/agent-runner/dist /agent-runner-dist
