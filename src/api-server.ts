@@ -390,6 +390,88 @@ async function handleTelegramIncoming(body: unknown, res: http.ServerResponse): 
   });
 }
 
+async function handleVapiWebhook(body: string, parsedBody: unknown, res: http.ServerResponse): Promise<void> {
+  const payload = parsedBody as {
+    type?: string;
+    call?: { id?: string; status?: string; endedReason?: string };
+    transcript?: string;
+    recordingUrl?: string;
+    summary?: string;
+  };
+
+  const callId = payload.call?.id ?? 'unknown';
+  const status = payload.call?.status ?? 'unknown';
+  const endedReason = payload.call?.endedReason ?? 'unknown';
+  const transcript = payload.transcript ?? '(no transcript)';
+  const recordingUrl = payload.recordingUrl ?? '(no recording)';
+
+  const content = `[vapi call completed: ${callId}]\n\nStatus: ${status}\nEnded: ${endedReason}\nRecording: ${recordingUrl}\n\nTranscript:\n${transcript}`;
+
+  const groups = getAllRegisteredGroups();
+  const groupEntries = Object.entries(groups);
+  if (groupEntries.length === 0) {
+    logger.warn({ callId }, 'VAPI webhook received but no group registered');
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  const [mainJid] = groupEntries[0];
+  storeMessage({
+    id: randomUUID(),
+    chat_jid: mainJid,
+    sender: 'webhook:vapi',
+    sender_name: 'VAPI',
+    content,
+    timestamp: new Date().toISOString(),
+    is_from_me: false,
+    is_bot_message: false,
+  });
+
+  logger.info({ callId, status, endedReason }, 'VAPI call-completed webhook stored');
+  json(res, 200, { ok: true });
+}
+
+async function handleBolnaWebhook(body: string, parsedBody: unknown, res: http.ServerResponse): Promise<void> {
+  const payload = parsedBody as {
+    call_id?: string;
+    status?: string;
+    transcript?: string;
+    recording_url?: string;
+    end_reason?: string;
+  };
+
+  const callId = payload.call_id ?? 'unknown';
+  const status = payload.status ?? 'unknown';
+  const endReason = payload.end_reason ?? 'unknown';
+  const transcript = payload.transcript ?? '(no transcript)';
+  const recordingUrl = payload.recording_url ?? '(no recording)';
+
+  const content = `[bolna call completed: ${callId}]\n\nStatus: ${status}\nEnded: ${endReason}\nRecording: ${recordingUrl}\n\nTranscript:\n${transcript}`;
+
+  const groups = getAllRegisteredGroups();
+  const groupEntries = Object.entries(groups);
+  if (groupEntries.length === 0) {
+    logger.warn({ callId }, 'Bolna webhook received but no group registered');
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  const [mainJid] = groupEntries[0];
+  storeMessage({
+    id: randomUUID(),
+    chat_jid: mainJid,
+    sender: 'webhook:bolna',
+    sender_name: 'Bolna',
+    content,
+    timestamp: new Date().toISOString(),
+    is_from_me: false,
+    is_bot_message: false,
+  });
+
+  logger.info({ callId, status, endReason }, 'Bolna call-completed webhook stored');
+  json(res, 200, { ok: true });
+}
+
 const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse) => Promise<void>> = {
   'refresh-pairing': handleRefreshPairing,
   'enable-integration': handleEnableIntegration,
@@ -411,6 +493,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // Health check — no auth required
   if (method === 'GET' && url === '/api/health') {
     return handleHealth(res);
+  }
+
+  // Public webhook endpoints — VAPI and Bolna call-completed events (no HMAC required)
+  const webhookMatch = url.match(/^\/webhooks\/(vapi|bolna)$/);
+  if (method === 'POST' && webhookMatch) {
+    const provider = webhookMatch[1] as 'vapi' | 'bolna';
+    const body = await readBody(req);
+    let parsed: unknown = {};
+    try { parsed = JSON.parse(body); } catch {}
+    if (provider === 'vapi') return handleVapiWebhook(body, parsed, res);
+    return handleBolnaWebhook(body, parsed, res);
   }
 
   // Command endpoints — require HMAC auth
