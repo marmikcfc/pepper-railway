@@ -471,6 +471,66 @@ async function resolveSkillsShCommand(
  * Returns the installed skill name(s), or null if the URL is not a skills.sh URL.
  */
 /**
+ * Install a skill from agentskills.io — Pepper's own skill registry.
+ * URL format: https://agentskills.io/<skill-name>
+ *
+ * Downloads the full skill directory (SKILL.md + all scripts/assets) from
+ * marmikcfc/pepper-skills using PEPPER_GITHUB_TOKEN (platform token, never
+ * the user's GITHUB_TOKEN). Returns the installed skill name, or null if
+ * the URL is not an agentskills.io URL.
+ */
+async function fetchAgentSkillsIo(
+  url: string,
+  skillsDir: string,
+): Promise<string | null> {
+  if (!url.match(/^https?:\/\/agentskills\.io\//)) return null;
+
+  const skillName = url.split('/').filter(Boolean).pop();
+  if (!skillName) return null;
+
+  const owner = 'marmikcfc';
+  const repo = 'pepper-skills';
+  const dirPath = `skills/${skillName}`;
+
+  // Use Pepper's platform token — never the user's GITHUB_TOKEN
+  const token = process.env.PEPPER_GITHUB_TOKEN;
+  const headers: Record<string, string> = { 'User-Agent': 'pepper-skill-installer' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const listUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${dirPath}`;
+  let files: Array<{ name: string; type: string; download_url: string | null }>;
+  try {
+    const res = await fetch(listUrl, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    files = await res.json();
+  } catch (err) {
+    throw new Error(`Failed to list ${dirPath} in ${owner}/${repo}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const destDir = path.join(skillsDir, skillName);
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const downloaded: string[] = [];
+  for (const file of files) {
+    if (file.type !== 'file' || !file.download_url) continue;
+    const fileRes = await fetch(file.download_url, { headers });
+    if (!fileRes.ok) {
+      logger.warn({ file: file.name, skillName }, 'Failed to download skill file, skipping');
+      continue;
+    }
+    fs.writeFileSync(path.join(destDir, file.name), await fileRes.text());
+    downloaded.push(file.name);
+  }
+
+  if (!downloaded.includes('SKILL.md')) {
+    throw new Error(`SKILL.md not found in ${owner}/${repo}/${dirPath}`);
+  }
+
+  logger.info({ skill: skillName, url, files: downloaded }, 'Installed skill from agentskills.io');
+  return skillName;
+}
+
+/**
  * Install a skill from a raw GitHub SKILL.md URL.
  * URL format: https://raw.githubusercontent.com/<owner>/<repo>/main/<path>/SKILL.md
  * The skill name is derived from the parent directory of SKILL.md in the path.
@@ -510,11 +570,15 @@ async function fetchSkillDirect(
   url: string,
   skillsDir: string,
 ): Promise<string | null> {
-  // Branch 1: raw GitHub SKILL.md direct download
+  // Branch 0: agentskills.io — Pepper's registry, full directory download
+  const agentSkillsResult = await fetchAgentSkillsIo(url, skillsDir);
+  if (agentSkillsResult !== null) return agentSkillsResult;
+
+  // Branch 1: raw GitHub SKILL.md direct download (single file only)
   const rawResult = await fetchRawSkillMd(url, skillsDir);
   if (rawResult !== null) return rawResult;
 
-  // Branch 2: skills.sh page scraping → npx skills add
+  // Branch 2: skills.sh page scraping → npx skills add (uses user's GITHUB_TOKEN)
   if (!url.match(/^https?:\/\/skills\.sh\//)) return null;
 
   const resolved = await resolveSkillsShCommand(url);
