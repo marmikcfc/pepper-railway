@@ -1,142 +1,169 @@
-#!/usr/bin/env node
+#!/usr/bin/env bash
+# orth — Orthogonal API CLI wrapper
+# Usage:
+#   orth run <api> <path> [--query key=val ...] [--body json]
+#   orth balance
+#   orth usage [--limit N]
+#   orth search <query>
+#
+# Calls https://api.orth.sh/v1 and logs cost to .data-costs.jsonl
+# Requires: ORTHOGONAL_API_KEY
 
-// src/orth.ts
-import Orthogonal from "@orth/sdk";
-import { appendFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
-var args = process.argv.slice(2);
-function usage() {
-  process.stderr.write(
-    "Usage:\n  orth run <api> <path> [--query key=val ...] [--body json]\n  orth balance\n  orth usage [--limit N]\n  orth search <query>\n"
-  );
+set -euo pipefail
+
+BASE_URL="https://api.orth.sh/v1"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+[ -z "${ORTHOGONAL_API_KEY:-}" ] && die "ORTHOGONAL_API_KEY not set"
+
+auth=(-H "Authorization: Bearer $ORTHOGONAL_API_KEY" -H "Content-Type: application/json")
+
+log_cost() {
+  local provider="orthogonal" api="${1:-}" path="${2:-}" price="${3:-0}" success="${4:-true}"
+  local cost_file="${DATA_COSTS_FILE:-${WORKSPACE_GROUP:-/workspace/group}/.data-costs.jsonl}"
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  echo "{\"ts\":\"$ts\",\"provider\":\"$provider\",\"api\":\"$api\",\"path\":\"$path\",\"price_usd\":\"$price\",\"success\":$success}" \
+    >> "$cost_file" 2>/dev/null || true
 }
-function getApiKey() {
-  const key = process.env.ORTHOGONAL_API_KEY;
-  if (!key) {
-    process.stderr.write("Error: ORTHOGONAL_API_KEY environment variable not set\n");
-    process.exit(1);
-  }
-  return key;
+
+# ── run ───────────────────────────────────────────────────────────────────────
+cmd_run() {
+  local api="${1:-}" path="${2:-}"
+  [ -z "$api" ] || [ -z "$path" ] && { echo "Usage: orth run <api> <path> [--query k=v ...] [--body json]" >&2; exit 1; }
+  shift 2
+
+  local query_params="" body="{}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --query|-q)
+        local kv="${2:-}"
+        [ -z "$kv" ] && die "--query requires key=value"
+        local k="${kv%%=*}" v="${kv#*=}"
+        query_params="$query_params&${k}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$v'))" 2>/dev/null || echo "$v")"
+        shift 2
+        ;;
+      --body|-d)
+        body="${2:-}"
+        [ -z "$body" ] && die "--body requires JSON string"
+        shift 2
+        ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local url="$BASE_URL/run"
+  local request_body
+  request_body=$(jq -n \
+    --arg api "$api" \
+    --arg path "$path" \
+    --argjson body "$body" \
+    '{api: $api, path: $path, body: $body}')
+
+  # Append query params if any
+  if [ -n "$query_params" ]; then
+    local qp="${query_params#&}"
+    request_body=$(echo "$request_body" | jq --arg q "$qp" '. + {query_string: $q}')
+  fi
+
+  local tmp
+  tmp=$(mktemp /tmp/orth_run_XXXXXX)
+  local http_status
+  http_status=$(curl -s -o "$tmp" -w "%{http_code}" -X POST "$url" "${auth[@]}" -d "$request_body") || true
+
+  local response
+  response=$(cat "$tmp"); rm -f "$tmp"
+
+  local success="true"
+  [[ "$http_status" -ge 400 ]] 2>/dev/null && success="false"
+
+  local price
+  price=$(echo "$response" | jq -r '.price // "0"' 2>/dev/null || echo "0")
+
+  log_cost "$api" "$path" "$price" "$success"
+  echo "$response" | jq '.data // .'
 }
-function logCost(entry) {
-  const costFile = process.env.DATA_COSTS_FILE || `${process.env.WORKSPACE_GROUP || "/workspace/group"}/.data-costs.jsonl`;
-  const line = JSON.stringify({
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    provider: "orthogonal",
-    ...entry
-  });
-  try {
-    const dir = dirname(costFile);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(costFile, line + "\n");
-  } catch {
-  }
+
+# ── balance ───────────────────────────────────────────────────────────────────
+cmd_balance() {
+  local tmp
+  tmp=$(mktemp /tmp/orth_balance_XXXXXX)
+  curl -s -o "$tmp" -X GET "$BASE_URL/credits/balance" "${auth[@]}" || true
+  local response
+  response=$(cat "$tmp"); rm -f "$tmp"
+  echo "$response" | jq '.'
 }
-async function cmdRun(api, path, rawArgs) {
-  const query = {};
-  let body;
-  for (let i = 0; i < rawArgs.length; i++) {
-    const flag = rawArgs[i];
-    if (flag === "--query" || flag === "-q") {
-      const kv = rawArgs[++i];
-      if (!kv) {
-        process.stderr.write("Error: --query requires key=value\n");
-        process.exit(1);
-      }
-      const eq = kv.indexOf("=");
-      if (eq < 1) {
-        process.stderr.write(`Error: invalid --query format: ${kv}
-`);
-        process.exit(1);
-      }
-      query[kv.slice(0, eq)] = kv.slice(eq + 1);
-    } else if (flag === "--body" || flag === "-d") {
-      const raw = rawArgs[++i];
-      if (!raw) {
-        process.stderr.write("Error: --body requires JSON string\n");
-        process.exit(1);
-      }
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        process.stderr.write("Error: --body value is not valid JSON\n");
-        process.exit(1);
-      }
-    }
-  }
-  const orthogonal = new Orthogonal({ apiKey: getApiKey() });
-  const response = await orthogonal.run({
-    api,
-    path,
-    query: Object.keys(query).length > 0 ? query : void 0,
-    body
-  });
-  logCost({ api, path, price_usd: response.price, success: response.success });
-  process.stderr.write(`\u2713 ${api} ${path} \u2014 $${response.price}
-`);
-  process.stdout.write(JSON.stringify(response.data, null, 2) + "\n");
+
+# ── usage ─────────────────────────────────────────────────────────────────────
+cmd_usage() {
+  local limit="20"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --limit) limit="${2:-20}"; shift 2 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  local tmp
+  tmp=$(mktemp /tmp/orth_usage_XXXXXX)
+  curl -s -o "$tmp" -X GET "$BASE_URL/credits/usage?limit=${limit}" "${auth[@]}" || true
+  local response
+  response=$(cat "$tmp"); rm -f "$tmp"
+  echo "$response" | jq '.'
 }
-async function cmdBalance() {
-  const res = await fetch("https://api.orth.sh/v1/credits/balance", {
-    headers: { Authorization: `Bearer ${getApiKey()}` }
-  });
-  const data = await res.json();
-  process.stdout.write(`Balance: ${data.balance ?? "unknown"}
-`);
+
+# ── search ────────────────────────────────────────────────────────────────────
+cmd_search() {
+  local query="$*"
+  [ -z "$query" ] && { echo "Usage: orth search <query>" >&2; exit 1; }
+
+  local body
+  body=$(jq -n --arg q "$query" '{prompt: $q, limit: 10}')
+
+  local tmp
+  tmp=$(mktemp /tmp/orth_search_XXXXXX)
+  curl -s -o "$tmp" -X POST "$BASE_URL/search" "${auth[@]}" -d "$body" || true
+  local response
+  response=$(cat "$tmp"); rm -f "$tmp"
+
+  # Pretty-print: name (slug) + endpoints if available, else raw JSON
+  if echo "$response" | jq -e '.results' > /dev/null 2>&1; then
+    echo "$response" | jq -r '.results[] | "\(.name) (\(.slug))\n" + ((.endpoints // [])[] | "  \(.path)\(.description // "" | if . != "" then " — " + . else "" end)")'
+  else
+    echo "$response" | jq '.'
+  fi
 }
-async function cmdUsage(rawArgs) {
-  const limitIdx = rawArgs.indexOf("--limit");
-  const limit = limitIdx >= 0 ? rawArgs[limitIdx + 1] : "20";
-  const res = await fetch(`https://api.orth.sh/v1/credits/usage?limit=${limit}`, {
-    headers: { Authorization: `Bearer ${getApiKey()}` }
-  });
-  const data = await res.json();
-  process.stdout.write(JSON.stringify(data, null, 2) + "\n");
-}
-async function cmdSearch(query) {
-  const res = await fetch("https://api.orth.sh/v1/search", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${getApiKey()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: query, limit: 10 })
-  });
-  const data = await res.json();
-  if (!data.results) {
-    process.stdout.write(JSON.stringify(data, null, 2) + "\n");
-    return;
-  }
-  for (const r of data.results) {
-    process.stdout.write(`${r.name} (${r.slug})
-`);
-    for (const ep of r.endpoints ?? []) {
-      process.stdout.write(`  ${ep.path}${ep.description ? " \u2014 " + ep.description : ""}
-`);
-    }
-  }
-}
-var cmd = args[0];
-try {
-  if (cmd === "run") {
-    if (!args[1] || !args[2]) {
-      usage();
-      process.exit(1);
-    }
-    await cmdRun(args[1], args[2], args.slice(3));
-  } else if (cmd === "balance") {
-    await cmdBalance();
-  } else if (cmd === "usage") {
-    await cmdUsage(args.slice(1));
-  } else if (cmd === "search") {
-    if (!args[1]) {
-      usage();
-      process.exit(1);
-    }
-    await cmdSearch(args.slice(1).join(" "));
-  } else {
-    usage();
-    process.exit(1);
-  }
-} catch (err) {
-  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}
-`);
-  process.exit(1);
-}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  run)    shift; cmd_run "$@" ;;
+  balance) cmd_balance ;;
+  usage)  shift; cmd_usage "$@" ;;
+  search) shift; cmd_search "$@" ;;
+  *)
+    cat <<'USAGE'
+orth — Orthogonal API CLI
+
+Commands:
+  run <api> <path> [--query k=v ...] [--body json]
+        Call an Orthogonal data API endpoint
+  balance
+        Show current credit balance
+  usage [--limit N]
+        Show recent API usage (default: 20 entries)
+  search <query>
+        Search available APIs and endpoints
+
+Examples:
+  orth search "company firmographics"
+  orth run apollo /search --query type=people --query name=John
+  orth run clearbit /companies/find --query domain=stripe.com
+  orth balance
+
+Environment:
+  ORTHOGONAL_API_KEY   (required) Orthogonal API key
+USAGE
+    exit 1
+    ;;
+esac

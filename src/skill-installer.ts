@@ -502,7 +502,7 @@ async function fetchAgentSkillsIo(
   try {
     const res = await fetch(listUrl, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    files = await res.json();
+    files = await res.json() as Array<{ name: string; type: string; download_url: string | null }>;
   } catch (err) {
     throw new Error(`Failed to list ${dirPath} in ${owner}/${repo}: ${err instanceof Error ? err.message : String(err)}`);
   }

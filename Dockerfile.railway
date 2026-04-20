@@ -66,8 +66,8 @@ RUN ARCH=$(dpkg --print-architecture) \
   && supabase --version
 
 # CLI tools (lightweight API wrappers)
-# orth is pre-built from marmikcfc/pepper-skills and vendored here — no token needed at build time.
-# To update: cd pepper-skills && npm run build && cp dist/orth.js pepper-railway/container/bin/orth
+# All tools are pure bash scripts — no compilation needed.
+# orth, exa, parallel, x-search, exa-search, composio-tool all live in container/bin/.
 COPY container/bin/composio-tool /usr/local/bin/composio-tool
 COPY container/bin/x-search /usr/local/bin/x-search
 COPY container/bin/exa-search /usr/local/bin/exa-search
