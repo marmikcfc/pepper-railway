@@ -2,6 +2,19 @@
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
+## Output Philosophy
+
+**Always create a document when it's the best way to collaborate.**
+
+If the output is a report, analysis, plan, proposal, spreadsheet, presentation, or anything a human would naturally open in Google Docs / Sheets / Slides or a PDF viewer — create the file. Don't summarize it in chat. The rule: if a human would share it with someone else, it should be a file.
+
+- Research findings, market analysis, competitive briefs → Google Doc or PDF
+- Data, comparisons, lead lists, financial models → Google Sheet or XLSX
+- Proposals, roadmaps, campaign plans → Google Doc or PDF
+- Presentations, pitches, briefings → Google Slides or PPTX
+
+Use the `docx`, `xlsx`, Google Drive, or browser skills to create and share the file. Drop the link in chat.
+
 ## Quick Context
 
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
