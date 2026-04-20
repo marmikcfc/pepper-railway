@@ -1,6 +1,3 @@
-import { App, LogLevel } from '@slack/bolt';
-import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
-
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
@@ -13,198 +10,150 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
-// Slack's chat.postMessage API limits text to ~4000 characters per call.
-// Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
-// The message subtypes we process. Bolt delivers all subtypes via app.event('message');
-// we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
-// (BotMessageEvent, subtype 'bot_message') so we can track our own output.
-type HandledMessageEvent = GenericMessageEvent | BotMessageEvent;
-
-export interface SlackChannelOpts {
-  onMessage: OnInboundMessage;
-  onChatMetadata: OnChatMetadata;
-  registeredGroups: () => Record<string, RegisteredGroup>;
+interface SlackEvent {
+  type: string;
+  channel: string;
+  channel_type?: string;
+  user?: string;
+  bot_id?: string;
+  text?: string;
+  ts: string;
+  thread_ts?: string;
+  subtype?: string;
 }
 
 export class SlackChannel implements Channel {
   name = 'slack';
 
-  private app: App;
+  private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{ jid: string; text: string }> = [];
-  private flushing = false;
   private userNameCache = new Map<string, string>();
-  // Track active thread per channel: channelId → thread_ts
-  // When a user posts in a channel, we start a thread on their message.
-  // When a user posts in an existing thread, we reply in that thread.
   private activeThread = new Map<string, string>();
+  private opts: {
+    onMessage: OnInboundMessage;
+    onChatMetadata: OnChatMetadata;
+    registeredGroups: () => Record<string, RegisteredGroup>;
+  };
 
-  private opts: SlackChannelOpts;
-
-  constructor(opts: SlackChannelOpts) {
+  constructor(
+    botToken: string,
+    opts: {
+      onMessage: OnInboundMessage;
+      onChatMetadata: OnChatMetadata;
+      registeredGroups: () => Record<string, RegisteredGroup>;
+    },
+  ) {
+    this.botToken = botToken;
     this.opts = opts;
-
-    // Read tokens — on Railway from process.env, locally from .env
-    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
-    const botToken = env.SLACK_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
-    const appToken = env.SLACK_APP_TOKEN || process.env.SLACK_APP_TOKEN;
-
-    if (!botToken || !appToken) {
-      throw new Error(
-        'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set (Railway service config or .env locally)',
-      );
-    }
-
-    this.app = new App({
-      token: botToken,
-      appToken,
-      socketMode: true,
-      logLevel: LogLevel.ERROR,
-    });
-
-    this.setupEventHandlers();
-  }
-
-  private setupEventHandlers(): void {
-    // Use app.event('message') instead of app.message() to capture all
-    // message subtypes including bot_message (needed to track our own output)
-    this.app.event('message', async ({ event }) => {
-      // Bolt's event type is the full MessageEvent union (17+ subtypes).
-      // We filter on subtype first, then narrow to the two types we handle.
-      const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message') return;
-
-      // After filtering, event is either GenericMessageEvent or BotMessageEvent
-      const msg = event as HandledMessageEvent;
-
-      if (!msg.text) return;
-
-      const jid = `slack:${msg.channel}`;
-      const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
-      const isGroup = msg.channel_type !== 'im';
-
-      // Always report metadata for group discovery
-      this.opts.onChatMetadata(jid, timestamp, undefined, 'slack', isGroup);
-
-      // Only deliver full messages for registered groups
-      const groups = this.opts.registeredGroups();
-      if (!groups[jid]) return;
-
-      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
-
-      let senderName: string;
-      if (isBotMessage) {
-        senderName = ASSISTANT_NAME;
-      } else {
-        senderName =
-          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
-          msg.user ||
-          'unknown';
-      }
-
-      // Determine thread context.
-      // For threaded messages, thread_ts is the parent; for top-level, use msg.ts
-      // (the bot will create a thread on it).
-      const incomingThreadTs = (msg as GenericMessageEvent).thread_ts;
-      const threadId = incomingThreadTs || msg.ts;
-
-      // Track active thread per channel for outbound replies.
-      if (!isBotMessage) {
-        this.activeThread.set(msg.channel, threadId);
-      }
-
-      // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
-      // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
-      // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
-      let content = msg.text;
-      if (this.botUserId && !isBotMessage) {
-        const mentionPattern = `<@${this.botUserId}>`;
-        if (
-          content.includes(mentionPattern) &&
-          !TRIGGER_PATTERN.test(content)
-        ) {
-          content = `@${ASSISTANT_NAME} ${content}`;
-        }
-      }
-
-      this.opts.onMessage(jid, {
-        id: msg.ts,
-        chat_jid: jid,
-        sender: msg.user || msg.bot_id || '',
-        sender_name: senderName,
-        content,
-        timestamp,
-        is_from_me: isBotMessage,
-        is_bot_message: isBotMessage,
-        thread_id: threadId,
-      });
-    });
   }
 
   async connect(): Promise<void> {
-    await this.app.start();
-
-    // Get bot's own user ID for self-message detection.
-    // Resolve this BEFORE setting connected=true so that messages arriving
-    // during startup can correctly detect bot-sent messages.
     try {
-      const auth = await this.app.client.auth.test();
-      this.botUserId = auth.user_id as string;
-      logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
+      const res = await fetch('https://slack.com/api/auth.test', {
+        headers: { Authorization: `Bearer ${this.botToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = (await res.json()) as { ok: boolean; user_id?: string };
+      if (data.ok && data.user_id) {
+        this.botUserId = data.user_id;
+        logger.info({ botUserId: this.botUserId }, 'Slack bot identity resolved');
+      }
     } catch (err) {
-      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
+      logger.warn({ err }, 'Failed to resolve Slack bot identity');
     }
 
     this.connected = true;
+    logger.info('Slack channel connected (HTTP relay mode)');
 
-    // Flush any messages queued before connection
-    await this.flushOutgoingQueue();
-
-    // Sync channel names on startup
     await this.syncGroups();
+  }
+
+  async handleSlackEvent(event: SlackEvent, teamId?: string): Promise<void> {
+    if (!event.text) return;
+
+    const jid = `slack:${event.channel}`;
+    const timestamp = new Date(parseFloat(event.ts) * 1000).toISOString();
+    const isGroup = event.channel_type !== 'im';
+
+    this.opts.onChatMetadata(jid, timestamp, undefined, 'slack', isGroup);
+
+    const groups = this.opts.registeredGroups();
+    if (!groups[jid]) return;
+
+    const isBotMessage = !!event.bot_id || event.user === this.botUserId;
+
+    let senderName: string;
+    if (isBotMessage) {
+      senderName = ASSISTANT_NAME;
+    } else {
+      senderName = (event.user ? await this.resolveUserName(event.user) : undefined)
+        || event.user || 'unknown';
+    }
+
+    const threadId = event.thread_ts || event.ts;
+
+    if (!isBotMessage) {
+      this.activeThread.set(event.channel, threadId);
+    }
+
+    let content = event.text;
+    if (this.botUserId && !isBotMessage) {
+      const mentionPattern = `<@${this.botUserId}>`;
+      if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        content = `@${ASSISTANT_NAME} ${content}`;
+      }
+    }
+
+    this.opts.onMessage(jid, {
+      id: event.ts,
+      chat_jid: jid,
+      sender: event.user || event.bot_id || '',
+      sender_name: senderName,
+      content,
+      timestamp,
+      is_from_me: isBotMessage,
+      is_bot_message: isBotMessage,
+      thread_id: threadId,
+    });
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
-
-    if (!this.connected) {
-      this.outgoingQueue.push({ jid, text });
-      logger.info(
-        { jid, queueSize: this.outgoingQueue.length },
-        'Slack disconnected, message queued',
-      );
-      return;
-    }
+    const threadTs = this.activeThread.get(channelId);
 
     try {
-      const threadTs = this.activeThread.get(channelId);
-
-      // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text,
-          thread_ts: threadTs,
-        });
+        await this.postMessage(channelId, text, threadTs);
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
-            channel: channelId,
-            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-            thread_ts: threadTs,
-          });
+          await this.postMessage(channelId, text.slice(i, i + MAX_MESSAGE_LENGTH), threadTs);
         }
       }
       logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ jid, text });
-      logger.warn(
-        { jid, err, queueSize: this.outgoingQueue.length },
-        'Failed to send Slack message, queued',
-      );
+      logger.error({ jid, err }, 'Failed to send Slack message');
+    }
+  }
+
+  private async postMessage(channel: string, text: string, threadTs?: string): Promise<void> {
+    const payload: Record<string, string> = { channel, text };
+    if (threadTs) payload.thread_ts = threadTs;
+
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.botToken}`,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Slack chat.postMessage failed: HTTP ${res.status}`);
     }
   }
 
@@ -218,21 +167,10 @@ export class SlackChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    await this.app.stop();
   }
 
-  // Slack does not expose a typing indicator API for bots.
-  // This no-op satisfies the Channel interface so the orchestrator
-  // doesn't need channel-specific branching.
-  async setTyping(_jid: string, _isTyping: boolean): Promise<void> {
-    // no-op: Slack Bot API has no typing indicator endpoint
-  }
+  async setTyping(_jid: string, _isTyping: boolean): Promise<void> {}
 
-  /**
-   * Sync channel metadata from Slack.
-   * Fetches channels the bot is a member of and stores their names in the DB.
-   * Also reports metadata so channels appear in available_groups.
-   */
   async syncGroups(_force?: boolean): Promise<void> {
     try {
       logger.info('Syncing channel metadata from Slack...');
@@ -241,18 +179,22 @@ export class SlackChannel implements Channel {
       const now = new Date().toISOString();
 
       do {
-        const result = await this.app.client.conversations.list({
-          types: 'public_channel,private_channel',
-          exclude_archived: true,
-          limit: 200,
-          cursor,
-        });
+        const res = await fetch(
+          `https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200${cursor ? `&cursor=${cursor}` : ''}`,
+          {
+            headers: { Authorization: `Bearer ${this.botToken}` },
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        const result = (await res.json()) as {
+          channels?: Array<{ id: string; name: string; is_member: boolean }>;
+          response_metadata?: { next_cursor?: string };
+        };
 
         for (const ch of result.channels || []) {
           if (ch.id && ch.name && ch.is_member) {
             const jid = `slack:${ch.id}`;
             updateChatName(jid, ch.name);
-            // Report metadata so these channels appear in available_groups
             this.opts.onChatMetadata(jid, now, ch.name, 'slack', true);
             count++;
           }
@@ -269,13 +211,19 @@ export class SlackChannel implements Channel {
 
   private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
-
     const cached = this.userNameCache.get(userId);
     if (cached) return cached;
 
     try {
-      const result = await this.app.client.users.info({ user: userId });
-      const name = result.user?.real_name || result.user?.name;
+      const res = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
+        headers: { Authorization: `Bearer ${this.botToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        user?: { real_name?: string; name?: string };
+      };
+      const name = data.user?.real_name || data.user?.name;
       if (name) this.userNameCache.set(userId, name);
       return name;
     } catch (err) {
@@ -283,40 +231,14 @@ export class SlackChannel implements Channel {
       return undefined;
     }
   }
-
-  private async flushOutgoingQueue(): Promise<void> {
-    if (this.flushing || this.outgoingQueue.length === 0) return;
-    this.flushing = true;
-    try {
-      logger.info(
-        { count: this.outgoingQueue.length },
-        'Flushing Slack outgoing queue',
-      );
-      while (this.outgoingQueue.length > 0) {
-        const item = this.outgoingQueue.shift()!;
-        const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text: item.text,
-        });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued Slack message sent',
-        );
-      }
-    } finally {
-      this.flushing = false;
-    }
-  }
 }
 
 registerChannel('slack', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+  const envVars = readEnvFile(['SLACK_BOT_TOKEN']);
   const botToken = envVars.SLACK_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
-  const appToken = envVars.SLACK_APP_TOKEN || process.env.SLACK_APP_TOKEN;
-  if (!botToken || !appToken) {
-    logger.warn('Slack: SLACK_BOT_TOKEN or SLACK_APP_TOKEN not set');
+  if (!botToken) {
+    logger.warn('Slack: SLACK_BOT_TOKEN not set — skipping');
     return null;
   }
-  return new SlackChannel(opts);
+  return new SlackChannel(botToken, opts);
 });

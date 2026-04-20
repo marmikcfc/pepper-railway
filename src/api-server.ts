@@ -343,6 +343,29 @@ async function handleResetSession(body: unknown, res: http.ServerResponse): Prom
   json(res, 200, { ok: true });
 }
 
+async function handleSlackIncoming(body: unknown, res: http.ServerResponse): Promise<void> {
+  const { event, team_id } = body as { event?: unknown; team_id?: string };
+  if (!event) {
+    json(res, 400, { error: 'Missing event' });
+    return;
+  }
+
+  const slackChannel = connectedChannels.find(
+    (ch) => ch.name === 'slack' && 'handleSlackEvent' in ch,
+  ) as (Channel & { handleSlackEvent(e: unknown, t?: string): Promise<void> }) | undefined;
+
+  if (!slackChannel) {
+    json(res, 503, { error: 'Slack channel not connected' });
+    return;
+  }
+
+  json(res, 200, { ok: true });
+
+  slackChannel.handleSlackEvent(event, team_id).catch((err) => {
+    logger.error({ err: err instanceof Error ? err.stack : err }, 'Slack handleSlackEvent failed');
+  });
+}
+
 async function handleTelegramIncoming(body: unknown, res: http.ServerResponse): Promise<void> {
   const { update } = body as { update?: unknown };
   if (!update) {
@@ -378,6 +401,7 @@ const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse)
   'cron-tick': handleCronTick,
   'reset-session': handleResetSession,
   'telegram-incoming': handleTelegramIncoming,
+  'slack-incoming': handleSlackIncoming,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
