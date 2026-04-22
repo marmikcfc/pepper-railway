@@ -19,7 +19,7 @@ export const PEPPER_TOOLS: PepperTool[] = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
-        num_results: { type: 'string', description: 'Number of results (default: 5)' },
+        num_results: { type: 'number', description: 'Number of results (1-10, default: 5)' },
       },
       required: ['query'],
     },
@@ -37,12 +37,12 @@ export const PEPPER_TOOLS: PepperTool[] = [
   },
   {
     name: 'github_fetch',
-    description: 'Fetch public GitHub repo information: README, file list, languages, description.',
+    description: 'Fetch public GitHub information. If repo is omitted, lists the owner\'s top repositories. If repo is provided, returns README, languages, and description for that specific repository.',
     input_schema: {
       type: 'object',
       properties: {
         owner: { type: 'string', description: 'GitHub org or username' },
-        repo: { type: 'string', description: 'Repository name' },
+        repo: { type: 'string', description: 'Repository name (omit to list top repos for the owner)' },
       },
       required: ['owner'],
     },
@@ -80,7 +80,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
   try {
     switch (name) {
       case 'web_search':
-        return await executeWebSearch(String(input.query ?? ''), parseInt(String(input.num_results ?? '5')));
+        return await executeWebSearch(String(input.query ?? ''), Number(input.num_results ?? 5));
       case 'fetch_url':
         return await executeFetchUrl(String(input.url ?? ''));
       case 'github_fetch':
@@ -222,9 +222,13 @@ async function executeWriteMemory(workspaceId: string, _key: string, value: unkn
     return JSON.stringify({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured' });
   }
 
+  if (!/^[0-9a-f-]{36}$/i.test(workspaceId)) {
+    return JSON.stringify({ error: 'Invalid workspace_id format' });
+  }
+
   const companyProfile = value;
 
-  const res = await fetch(`${supabaseUrl}/rest/v1/workspaces?id=eq.${workspaceId}`, {
+  const res = await fetch(`${supabaseUrl}/rest/v1/workspaces?id=eq.${encodeURIComponent(workspaceId)}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
