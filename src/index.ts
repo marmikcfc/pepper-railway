@@ -77,7 +77,7 @@ import { startSchedulerLoop, runDueTasks } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { inferIsDM } from './jid-utils.js';
 import { logger } from './logger.js';
-import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer, setSchedulerTickFn, setSessionResetFn } from './api-server.js';
+import { setAllowedNumberFns, setWebchatFns, setChannels, startApiServer, setSchedulerTickFn, setSessionResetFn, setKillProcessFn } from './api-server.js';
 import type { WebchatChannel } from './channels/webchat.js';
 
 // Re-export for backwards compatibility during refactor
@@ -961,6 +961,7 @@ async function main(): Promise<void> {
   // External cron is a fallback that wakes idle Railway containers.
   setSchedulerTickFn(() => runDueTasks(schedulerDeps));
   setSessionResetFn((folder) => { delete sessions[folder]; });
+  setKillProcessFn((jid) => queue.killProcess(jid));
   startSchedulerLoop(schedulerDeps);
   startIpcWatcher({
     sendMessage: (jid, text) => {

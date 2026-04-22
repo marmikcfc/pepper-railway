@@ -26,6 +26,13 @@ export function setAllowedNumberFns(
 let _enqueueWebchat: ((jid: string) => void) | undefined;
 let _getWebchatChannel: (() => import('./channels/webchat.js').WebchatChannel | undefined) | undefined;
 
+// Lazily resolved kill callback (set by index.ts after queue is initialised)
+let _killProcess: ((jid: string) => boolean) | undefined;
+
+export function setKillProcessFn(fn: (jid: string) => boolean): void {
+  _killProcess = fn;
+}
+
 export function setWebchatFns(
   enqueue: (jid: string) => void,
   getChannel: () => import('./channels/webchat.js').WebchatChannel | undefined,
@@ -343,6 +350,17 @@ async function handleResetSession(body: unknown, res: http.ServerResponse): Prom
   json(res, 200, { ok: true });
 }
 
+async function handleStopQuery(_body: unknown, res: http.ServerResponse): Promise<void> {
+  const killed = _killProcess?.('admin@pepper');
+  if (!killed) {
+    // No active process — nothing to kill (idempotent)
+    json(res, 200, { ok: true, message: 'No active process' });
+    return;
+  }
+  logger.info('Stop-query command received — SIGTERM sent to agent process');
+  json(res, 200, { ok: true });
+}
+
 async function handleSlackIncoming(body: unknown, res: http.ServerResponse): Promise<void> {
   const { event, team_id } = body as { event?: unknown; team_id?: string };
   if (!event) {
@@ -484,6 +502,7 @@ const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse)
   'reset-session': handleResetSession,
   'telegram-incoming': handleTelegramIncoming,
   'slack-incoming': handleSlackIncoming,
+  'stop-query': handleStopQuery,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

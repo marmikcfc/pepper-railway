@@ -178,6 +178,26 @@ export class GroupQueue {
   }
 
   /**
+   * Hard-kill the active agent process with SIGTERM, escalating to SIGKILL after 15s.
+   * Returns true if a process was found and signalled, false if nothing was running.
+   */
+  killProcess(groupJid: string): boolean {
+    const state = this.getGroup(groupJid);
+    if (!state.process || !state.active) return false;
+
+    logger.info({ groupJid }, 'Killing agent process (user-requested cancel)');
+    state.process.kill('SIGTERM');
+    const proc = state.process;
+    setTimeout(() => {
+      if (!proc.killed) {
+        logger.warn({ groupJid }, 'Agent process did not exit after SIGTERM, escalating to SIGKILL');
+        proc.kill('SIGKILL');
+      }
+    }, 15000);
+    return true;
+  }
+
+  /**
    * Signal the active container to wind down by writing a close sentinel.
    */
   closeStdin(groupJid: string): void {
