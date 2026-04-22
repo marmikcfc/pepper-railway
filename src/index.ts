@@ -7,6 +7,7 @@ import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   IS_RAILWAY,
@@ -981,6 +982,23 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, ag, rj) =>
       writeGroupsSnapshot(gf, ag, rj),
+    restartAgent: (groupFolder: string) => {
+      // Write _close sentinel after 3s so the agent can finish its current
+      // response (reading the install result) before shutting down.
+      // On next message the agent re-spawns with updated skills loaded.
+      const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+      setTimeout(() => {
+        try {
+          fs.mkdirSync(inputDir, { recursive: true });
+          const tmpPath = path.join(inputDir, '_close.tmp');
+          fs.writeFileSync(tmpPath, '');
+          fs.renameSync(tmpPath, path.join(inputDir, '_close'));
+          logger.info({ groupFolder }, 'Restart signal sent to agent (skill install)');
+        } catch (err) {
+          logger.error({ groupFolder, err }, 'Failed to send restart signal to agent');
+        }
+      }, 3000);
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
 
