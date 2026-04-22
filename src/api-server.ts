@@ -146,6 +146,16 @@ async function handleDisableIntegration(body: unknown, res: http.ServerResponse)
 }
 
 async function handleWebhookEvent(body: unknown, res: http.ServerResponse): Promise<void> {
+  // PEPPER_MODE: all webhook-event calls go to the Pepper agent runner
+  if (process.env.PEPPER_MODE === 'true') {
+    const { runPepperRailwayAgent } = await import('./pepper-tasks/runner.js');
+    runPepperRailwayAgent(body).catch((err) => {
+      logger.error({ err }, 'Pepper Railway agent error');
+    });
+    json(res, 202, { accepted: true });
+    return;
+  }
+
   const { integrationId, eventType, payload } = body as {
     integrationId: string;
     eventType: string;
