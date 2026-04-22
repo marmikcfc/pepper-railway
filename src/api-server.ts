@@ -60,9 +60,14 @@ export function setChannels(channels: Channel[]): void {
 }
 
 function verifyHmac(body: string, signatureHeader: string | undefined): boolean {
-  const secret = process.env.PEPPER_EVENT_SECRET;
+  const isPepperMode = process.env.PEPPER_MODE === 'true';
+  const secret = isPepperMode
+    ? process.env.PEPPER_SERVICE_SECRET
+    : process.env.PEPPER_EVENT_SECRET;
+
   if (!secret) {
-    logger.warn('PEPPER_EVENT_SECRET not set — rejecting command request');
+    const varName = isPepperMode ? 'PEPPER_SERVICE_SECRET' : 'PEPPER_EVENT_SECRET';
+    logger.warn(`${varName} not set — rejecting command request`);
     return false;
   }
   if (!signatureHeader) return false;
