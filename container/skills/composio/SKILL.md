@@ -18,11 +18,163 @@ If `composio-tool apps` returns an error about missing API key, tell the user:
 
 ## DO NOT use Composio for these services
 
-These have dedicated Platform skills. Always prefer them:
-
-- **GitHub** → use `gh` CLI (gh-cli skill)
 - **Supabase** → use `supabase` CLI (supabase skill)
-- **Email** → use AgentMail MCP tools (agentmail-cli skill)
+- **Agent's own email inbox** → use AgentMail MCP tools (agentmail-cli skill)
+
+**Email distinction:** AgentMail = the agent's own dedicated inbox (receiving messages, maintaining threads). Composio Gmail = the *user's* Gmail account (read, send, draft on their behalf).
+
+**GitHub:** Use Composio for standard operations (create issue, PR, list repos). For complex git operations (clone, checkout, commit, push), use the `gh` CLI alongside.
+
+---
+
+## Gmail workflows
+
+Use Composio to read and act on the **user's Gmail account**. Always `search` before executing — Gmail slugs are not obvious.
+
+```bash
+# Send an email
+composio-tool search "send email" --toolkit gmail --limit 3
+composio-tool execute GMAIL_SEND_EMAIL '{"recipient_email": "user@example.com", "subject": "Hello", "body": "Message body here"}'
+
+# List / search emails
+composio-tool search "list emails" --toolkit gmail --limit 3
+composio-tool execute GMAIL_LIST_EMAILS '{"query": "is:unread", "max_results": 20}'
+
+# Get a specific email by message ID
+composio-tool search "fetch email" --toolkit gmail --limit 3
+composio-tool execute GMAIL_FETCH_EMAIL_BY_MESSAGE_ID '{"message_id": "<id from list>"}'
+
+# Create a draft
+composio-tool search "create draft" --toolkit gmail --limit 3
+composio-tool execute GMAIL_CREATE_EMAIL_DRAFT '{"recipient_email": "user@example.com", "subject": "Draft subject", "body": "Draft body"}'
+```
+
+---
+
+## GitHub workflows
+
+Use Composio for standard GitHub CRUD. For git operations (clone, checkout, commit, push) use the `gh` CLI.
+
+```bash
+# Create an issue
+composio-tool search "create issue" --toolkit github --limit 3
+composio-tool execute GITHUB_CREATE_AN_ISSUE '{"owner": "myorg", "repo": "myrepo", "title": "Bug: ...", "body": "Steps to reproduce..."}'
+
+# List repos
+composio-tool search "list repositories" --toolkit github --limit 3
+composio-tool execute GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER '{}'
+
+# Create a pull request
+composio-tool search "create pull request" --toolkit github --limit 3
+composio-tool execute GITHUB_CREATE_A_PULL_REQUEST '{"owner": "myorg", "repo": "myrepo", "title": "feat: ...", "head": "feature-branch", "base": "main", "body": "## Summary\n..."}'
+
+# Get a repository
+composio-tool execute GITHUB_GET_A_REPOSITORY '{"owner": "myorg", "repo": "myrepo"}'
+```
+
+---
+
+## Google Sheets workflows
+
+```bash
+# Create a new spreadsheet
+composio-tool search "create spreadsheet" --toolkit googlesheets --limit 3
+composio-tool execute GOOGLESHEETS_CREATE_GOOGLE_SHEET '{"title": "My Sheet"}'
+
+# Add / update values in a range
+composio-tool search "update values" --toolkit googlesheets --limit 3
+composio-tool execute GOOGLESHEETS_BATCH_UPDATE_VALUES '{"spreadsheet_id": "<id>", "data": [{"range": "Sheet1!A1", "values": [["Col1", "Col2"], ["Val1", "Val2"]]}]}'
+
+# Read values from a range
+composio-tool search "get values" --toolkit googlesheets --limit 3
+composio-tool execute GOOGLESHEETS_GET_VALUES_OF_A_SPREADSHEET '{"spreadsheet_id": "<id>", "ranges": ["Sheet1!A1:Z100"]}'
+
+# Add a single row
+composio-tool search "add row" --toolkit googlesheets --limit 3
+composio-tool execute GOOGLESHEETS_SHEET_FROM_JSON '{"spreadsheet_id": "<id>", "sheet_name": "Sheet1", "data": [{"col1": "val1", "col2": "val2"}]}'
+```
+
+---
+
+## Google Calendar workflows
+
+```bash
+# Create an event
+composio-tool search "create event" --toolkit googlecalendar --limit 3
+composio-tool execute GOOGLECALENDAR_CREATE_EVENT '{"summary": "Team Standup", "start": {"dateTime": "2026-04-23T10:00:00Z"}, "end": {"dateTime": "2026-04-23T10:30:00Z"}}'
+
+# List upcoming events
+composio-tool search "list events" --toolkit googlecalendar --limit 3
+composio-tool execute GOOGLECALENDAR_LIST_EVENTS '{"calendar_id": "primary", "time_min": "2026-04-23T00:00:00Z", "max_results": 10}'
+
+# Find / search events
+composio-tool search "find event" --toolkit googlecalendar --limit 3
+
+# Delete an event
+composio-tool search "delete event" --toolkit googlecalendar --limit 3
+composio-tool execute GOOGLECALENDAR_DELETE_EVENT '{"calendar_id": "primary", "event_id": "<id>"}'
+```
+
+---
+
+## Slack workflows
+
+```bash
+# Send a message to a channel
+composio-tool search "send message" --toolkit slack --limit 3
+composio-tool execute SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL '{"channel": "#general", "text": "Hello from Pepper!"}'
+
+# List channels
+composio-tool search "list channels" --toolkit slack --limit 3
+composio-tool execute SLACK_LISTS_ALL_CHANNELS_IN_A_SLACK_TEAM '{}'
+
+# Fetch channel message history
+composio-tool search "channel history" --toolkit slack --limit 3
+composio-tool execute SLACK_FETCH_CHANNEL_MESSAGE_HISTORY '{"channel": "C12345678", "limit": 50}'
+```
+
+---
+
+## Notion workflows
+
+```bash
+# Create a page in a database
+composio-tool search "create page" --toolkit notion --limit 3
+composio-tool execute NOTION_CREATE_PAGE '{"parent": {"database_id": "<db_id>"}, "properties": {"Name": {"title": [{"text": {"content": "New Page"}}]}}}'
+
+# Search Notion
+composio-tool search "search notion" --toolkit notion --limit 3
+composio-tool execute NOTION_SEARCH_NOTION '{"query": "meeting notes"}'
+
+# Retrieve a page
+composio-tool search "get page" --toolkit notion --limit 3
+composio-tool execute NOTION_RETRIEVE_A_PAGE '{"page_id": "<page_id>"}'
+
+# Add content to a page
+composio-tool search "add content" --toolkit notion --limit 3
+```
+
+---
+
+## Google Drive workflows
+
+```bash
+# Find a file
+composio-tool search "find file" --toolkit googledrive --limit 3
+composio-tool execute GOOGLEDRIVE_FIND_FILE '{"query": "budget report"}'
+
+# Create a file / document
+composio-tool search "create file" --toolkit googledrive --limit 3
+composio-tool execute GOOGLEDRIVE_CREATE_FILE_FROM_TEXT '{"name": "My Doc", "content": "Document content here"}'
+
+# Get file metadata
+composio-tool search "get file" --toolkit googledrive --limit 3
+composio-tool execute GOOGLEDRIVE_GET_FILE_METADATA '{"file_id": "<id>"}'
+
+# Create a folder
+composio-tool search "create folder" --toolkit googledrive --limit 3
+composio-tool execute GOOGLEDRIVE_CREATE_FOLDER '{"name": "Project Assets"}'
+```
 
 ---
 
