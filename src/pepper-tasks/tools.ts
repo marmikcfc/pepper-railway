@@ -69,8 +69,9 @@ export const PEPPER_TOOLS: PepperTool[] = [
         agent_name: { type: 'string', description: 'Agent name' },
         role: { type: 'string', description: 'Agent role or job title' },
         workspace_id: { type: 'string', description: 'Workspace ID' },
+        user_id: { type: 'string', description: 'User ID (from context)' },
       },
-      required: ['agent_name', 'role', 'workspace_id'],
+      required: ['agent_name', 'role', 'workspace_id', 'user_id'],
     },
   },
 ];
@@ -258,7 +259,7 @@ async function executeProvisionAgent(input: Record<string, unknown>): Promise<st
     },
     body: JSON.stringify({
       wsId: String(input.workspace_id ?? ''),
-      userId: '',
+      userId: String(input.user_id ?? ''),
       agent_name: String(input.agent_name ?? ''),
       role: String(input.role ?? ''),
     }),
