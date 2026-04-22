@@ -6,7 +6,7 @@ export interface PepperTool {
   description: string;
   input_schema: {
     type: 'object';
-    properties: Record<string, { type: string; description: string }>;
+    properties: Record<string, { type: string; description: string; enum?: string[] }>;
     required: string[];
   };
 }
@@ -53,10 +53,11 @@ export const PEPPER_TOOLS: PepperTool[] = [
     input_schema: {
       type: 'object',
       properties: {
+        key: { type: 'string', enum: ['company_profile'], description: 'Memory key to write' },
+        value: { type: 'object', description: 'Structured company profile object to store' },
         workspace_id: { type: 'string', description: 'Workspace ID' },
-        company_profile: { type: 'string', description: 'JSON string of the structured company profile' },
       },
-      required: ['workspace_id', 'company_profile'],
+      required: ['key', 'value', 'workspace_id'],
     },
   },
   {
@@ -65,28 +66,26 @@ export const PEPPER_TOOLS: PepperTool[] = [
     input_schema: {
       type: 'object',
       properties: {
-        ws_id: { type: 'string', description: 'Workspace ID' },
-        user_id: { type: 'string', description: 'User ID' },
         agent_name: { type: 'string', description: 'Agent name' },
         role: { type: 'string', description: 'Agent role or job title' },
-        model_id: { type: 'string', description: 'Model ID (e.g. openai/gpt-4.1)' },
+        workspace_id: { type: 'string', description: 'Workspace ID' },
       },
-      required: ['ws_id', 'user_id', 'agent_name'],
+      required: ['agent_name', 'role', 'workspace_id'],
     },
   },
 ];
 
-export async function executeTool(name: string, input: Record<string, string>): Promise<string> {
+export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
   try {
     switch (name) {
       case 'web_search':
-        return await executeWebSearch(input.query, parseInt(input.num_results ?? '5'));
+        return await executeWebSearch(String(input.query ?? ''), parseInt(String(input.num_results ?? '5')));
       case 'fetch_url':
-        return await executeFetchUrl(input.url);
+        return await executeFetchUrl(String(input.url ?? ''));
       case 'github_fetch':
-        return await executeGithubFetch(input.owner, input.repo);
+        return await executeGithubFetch(String(input.owner ?? ''), input.repo != null ? String(input.repo) : undefined);
       case 'write_memory':
-        return await executeWriteMemory(input.workspace_id, input.company_profile);
+        return await executeWriteMemory(String(input.workspace_id ?? ''), String(input.key ?? 'company_profile'), input.value);
       case 'provision_agent':
         return await executeProvisionAgent(input);
       default:
@@ -214,7 +213,7 @@ async function executeGithubFetch(owner: string, repo?: string): Promise<string>
   });
 }
 
-async function executeWriteMemory(workspaceId: string, companyProfileJson: string): Promise<string> {
+async function executeWriteMemory(workspaceId: string, _key: string, value: unknown): Promise<string> {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -222,12 +221,7 @@ async function executeWriteMemory(workspaceId: string, companyProfileJson: strin
     return JSON.stringify({ error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured' });
   }
 
-  let companyProfile: unknown;
-  try {
-    companyProfile = JSON.parse(companyProfileJson);
-  } catch {
-    return JSON.stringify({ error: 'company_profile must be valid JSON' });
-  }
+  const companyProfile = value;
 
   const res = await fetch(`${supabaseUrl}/rest/v1/workspaces?id=eq.${workspaceId}`, {
     method: 'PATCH',
@@ -248,7 +242,7 @@ async function executeWriteMemory(workspaceId: string, companyProfileJson: strin
   return JSON.stringify({ success: true, workspace_id: workspaceId });
 }
 
-async function executeProvisionAgent(input: Record<string, string>): Promise<string> {
+async function executeProvisionAgent(input: Record<string, unknown>): Promise<string> {
   const cloudUrl = process.env.PEPPER_CLOUD_URL;
   const platformToken = process.env.PEPPER_PLATFORM_TOKEN;
 
@@ -263,11 +257,10 @@ async function executeProvisionAgent(input: Record<string, string>): Promise<str
       'Authorization': `Bearer ${platformToken}`,
     },
     body: JSON.stringify({
-      wsId: input.ws_id,
-      userId: input.user_id,
-      agent_name: input.agent_name,
-      role: input.role,
-      model_id: input.model_id,
+      wsId: String(input.workspace_id ?? ''),
+      userId: '',
+      agent_name: String(input.agent_name ?? ''),
+      role: String(input.role ?? ''),
     }),
   });
 

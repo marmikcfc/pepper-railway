@@ -145,7 +145,7 @@ export async function runPepperRailwayAgent(body: unknown): Promise<void> {
       if (block.type !== 'tool_use') continue;
 
       logger.info({ workspaceId, tool: block.name, input: JSON.stringify(block.input).slice(0, 200) }, 'Executing tool');
-      const result = await executeTool(block.name, block.input as Record<string, string>);
+      const result = await executeTool(block.name, block.input as Record<string, unknown>);
       logger.info({ workspaceId, tool: block.name, result: result.slice(0, 200) }, 'Tool result');
 
       toolResults.push({
