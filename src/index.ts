@@ -772,6 +772,18 @@ async function main(): Promise<void> {
     }
   }
 
+  // PEPPER_MODE: platform compute service — skip all channel/agent infrastructure
+  if (process.env.PEPPER_MODE === 'true') {
+    logger.info('Starting in PEPPER_MODE — platform compute service');
+    if (process.env.PORT) {
+      startApiServer(Number(process.env.PORT));
+    } else {
+      startApiServer(3000);
+    }
+    logger.info('Pepper Railway compute service ready');
+    return; // Do not proceed with channel/agent startup
+  }
+
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
