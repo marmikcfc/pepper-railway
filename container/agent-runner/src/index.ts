@@ -274,9 +274,10 @@ const CLI_PASSTHROUGH_VARS = new Set([
   // Model alias overrides — must land in process.env for Claude Code SDK to honor them
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  // Marketing data sources (platform keys — used by orth/exa/parallel wrappers via Bash)
+  // Marketing data sources (platform keys — used by orth/exa/parallel/perplexity wrappers via Bash)
   'ORTHOGONAL_API_KEY',      // orth wrapper → Orthogonal unified API
   'PARALLEL_API_KEY',        // parallel wrapper → Parallel deep research
+  'PERPLEXITY_API_KEY',      // perplexity wrapper → Perplexity Sonar API
   // Cold email (B2B ICPs only)
   'SMARTLEAD_API_KEY',       // smartlead-campaign-manager skill
   // Ads APIs (opt-in per ICP)
@@ -547,6 +548,29 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Web search guidance — injected for all agents (main + sub).
+  // WebSearch/WebFetch built-ins are not in allowedTools because they route
+  // through OpenRouter and require direct Anthropic API access to work.
+  const webSearchGuidance = `## Web Search & Research
+
+The WebSearch and WebFetch built-in tools are NOT available. Use Bash-based alternatives instead:
+
+- **\`exa-search\`** — structured web search via Exa API (EXA_API_KEY is pre-configured)
+  - \`exa-search "query"\` — general search
+  - \`exa-search "query" --domain reddit.com,producthunt.com\` — domain-filtered
+  - \`exa-search "query" --since 2025-01-01 --summary\` — recent results with summaries
+  - \`exa-search --help\` — full options
+
+- **\`perplexity\`** — AI-grounded web search via Perplexity Sonar (PERPLEXITY_API_KEY is pre-configured)
+  - \`perplexity "query"\` — grounded answer with citations (default: sonar-pro)
+  - \`perplexity "query" --model sonar-deep-research\` — comprehensive multi-step research
+  - \`perplexity --help\` — full options
+
+- **\`parallel\`** — deep research via Parallel AI (PARALLEL_API_KEY is pre-configured)
+  - \`parallel /task '{"query":"...", "mode":"lite"}'\` — research task
+
+Never attempt to call WebSearch or WebFetch — they are not allowed and will error.`;
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -577,13 +601,14 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
+      systemPrompt: {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+        append: [webSearchGuidance, globalClaudeMd].filter(Boolean).join('\n\n'),
+      },
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
         'Task', 'TaskOutput', 'TaskStop',
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',

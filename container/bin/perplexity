@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# perplexity — Perplexity Sonar API wrapper for AI-grounded web search
+# Usage: perplexity "query" [--model sonar|sonar-pro|sonar-deep-research|sonar-reasoning-pro] [--max-tokens N]
+# Default model: sonar-pro (grounded answers with citations)
+set -euo pipefail
+
+[ -z "${PERPLEXITY_API_KEY:-}" ] && { echo '{"error":"PERPLEXITY_API_KEY not set."}' >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+Usage: perplexity "query" [options]
+
+Options:
+  --model MODEL      Model to use (default: sonar-pro)
+                     sonar               — fast, real-time web search
+                     sonar-pro           — deeper search with more sources (default)
+                     sonar-deep-research — comprehensive multi-step research
+                     sonar-reasoning-pro — expert-level reasoning + search
+  --max-tokens N     Max tokens in response (default: 2000)
+  --help             Show this help
+
+Examples:
+  perplexity "What is Retell AI's pricing in 2026?"
+  perplexity "Latest funding rounds in voice AI space" --model sonar-pro
+  perplexity "Comprehensive analysis of B2B SaaS churn benchmarks" --model sonar-deep-research
+EOF
+  exit 0
+}
+
+QUERY=""
+MODEL="sonar-pro"
+MAX_TOKENS=2000
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)      MODEL="$2"; shift 2 ;;
+    --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
+    --help|-h)    usage ;;
+    *)            QUERY="$1"; shift ;;
+  esac
+done
+
+[ -z "$QUERY" ] && usage
+
+BODY=$(jq -n \
+  --arg model "$MODEL" \
+  --arg query "$QUERY" \
+  --argjson max_tokens "$MAX_TOKENS" \
+  '{"model":$model,"messages":[{"role":"user","content":$query}],"max_tokens":$max_tokens}')
+
+response=$(curl -sf --max-time 60 "https://api.perplexity.ai/chat/completions" \
+  -H "Authorization: Bearer $PERPLEXITY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$BODY" 2>/dev/null) || { echo '{"error":"Perplexity API request failed. Check PERPLEXITY_API_KEY and network."}' >&2; exit 1; }
+
+echo "$response" | jq '{
+  answer: .choices[0].message.content,
+  citations: (.citations // []),
+  model: .model,
+  usage: .usage
+}'
