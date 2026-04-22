@@ -99,13 +99,28 @@ for s in data['platform']:
 
 ## How to get a skill installed
 
-Skills are installed by the Pepper platform when an agent is created or updated. If you find a skill you need:
+### From the Pepper catalog (self-install)
+
+If the skill you need is in the catalog, install it directly using the `manage_skills` MCP tool:
+
+```bash
+# In the manage_skills tool, use action: "add" with the repo slug
+# e.g., repo: "marmikcfc/pepper-skills" or "owner/repo-name"
+```
+
+The orchestrator will:
+1. Validate the repo is in the Pepper catalog
+2. Install it via `npx skills add`
+3. Send you the result (including any required env vars)
+4. Restart the agent so the skill loads (including MCP servers)
+
+**If the skill has required env vars:** installation succeeds but the agent won't restart automatically. Tell the user which vars to add in **dashboard → agent settings → Environment**, then ask them to restart the agent.
+
+### Off-catalog or env-var setup (dashboard path)
 
 1. **Tell the user** what skill you need and its `source_url`
 2. **The user** goes to their Pepper dashboard → agent settings → Skills
 3. The skill gets provisioned on next agent restart
-
-You cannot self-install skills mid-task. Skills are provisioned at startup.
 
 ---
 
