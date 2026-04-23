@@ -60,9 +60,14 @@ export function setChannels(channels: Channel[]): void {
 }
 
 function verifyHmac(body: string, signatureHeader: string | undefined): boolean {
-  const secret = process.env.PEPPER_EVENT_SECRET;
+  const isPepperMode = process.env.PEPPER_MODE === 'true';
+  const secret = isPepperMode
+    ? process.env.PEPPER_SERVICE_SECRET
+    : process.env.PEPPER_EVENT_SECRET;
+
   if (!secret) {
-    logger.warn('PEPPER_EVENT_SECRET not set — rejecting command request');
+    const varName = isPepperMode ? 'PEPPER_SERVICE_SECRET' : 'PEPPER_EVENT_SECRET';
+    logger.warn(`${varName} not set — rejecting command request`);
     return false;
   }
   if (!signatureHeader) return false;
@@ -141,6 +146,16 @@ async function handleDisableIntegration(body: unknown, res: http.ServerResponse)
 }
 
 async function handleWebhookEvent(body: unknown, res: http.ServerResponse): Promise<void> {
+  // PEPPER_MODE: all webhook-event calls go to the Pepper agent runner
+  if (process.env.PEPPER_MODE === 'true') {
+    const { runPepperRailwayAgent } = await import('./pepper-tasks/runner.js');
+    runPepperRailwayAgent(body).catch((err) => {
+      logger.error({ err }, 'Pepper Railway agent error');
+    });
+    json(res, 202, { accepted: true });
+    return;
+  }
+
   const { integrationId, eventType, payload } = body as {
     integrationId: string;
     eventType: string;

@@ -60,6 +60,7 @@ beforeEach(() => {
     syncGroups: async () => {},
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
+    restartAgent: () => {},
   };
 });
 

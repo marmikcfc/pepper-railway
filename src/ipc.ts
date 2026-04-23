@@ -7,6 +7,11 @@ import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { logger } from './logger.js';
+import {
+  installSkillsFromRepo,
+  listSkills,
+  removeSkill,
+} from './skill-installer.js';
 import { reportScheduleHint } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 
@@ -21,6 +26,72 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  restartAgent: (groupFolder: string) => void;
+}
+
+// --- Catalog validation helpers ---
+
+interface CatalogSkill {
+  id: string;
+  name: string;
+  source_url: string;
+}
+
+interface CatalogCache {
+  skills: CatalogSkill[];
+  expiresAt: number;
+}
+
+let catalogCache: CatalogCache | null = null;
+const CATALOG_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/** @internal - for tests only */
+export function _resetCatalogCache(): void {
+  catalogCache = null;
+}
+
+async function fetchCatalogSkills(): Promise<CatalogSkill[]> {
+  const now = Date.now();
+  if (catalogCache && catalogCache.expiresAt > now) return catalogCache.skills;
+
+  const cloudUrl = process.env.PEPPER_CLOUD_URL;
+  if (!cloudUrl) return [];
+
+  try {
+    const res = await fetch(`${cloudUrl}/api/skills/catalog`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`Catalog fetch failed: ${res.status}`);
+    const data = (await res.json()) as {
+      platform: CatalogSkill[];
+      catalog: CatalogSkill[];
+    };
+    const all = [...(data.platform ?? []), ...(data.catalog ?? [])];
+    catalogCache = { skills: all, expiresAt: now + CATALOG_TTL_MS };
+    return all;
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch skills catalog, using cached if available');
+    return catalogCache?.skills ?? [];
+  }
+}
+
+function isSkillInCatalog(repo: string, skills: CatalogSkill[]): boolean {
+  const normalized = repo
+    .replace(/^https?:\/\/github\.com\//, '')
+    .replace(/\.git$/, '');
+  return skills.some((s) => s.source_url.includes(normalized));
+}
+
+function writeIpcResponse(
+  groupFolder: string,
+  requestId: string,
+  data: unknown,
+): void {
+  const responseDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+  fs.mkdirSync(responseDir, { recursive: true });
+  const tmpPath = path.join(responseDir, `${requestId}.json.tmp`);
+  fs.writeFileSync(tmpPath, JSON.stringify(data));
+  fs.renameSync(tmpPath, path.join(responseDir, `${requestId}.json`));
 }
 
 let ipcWatcherRunning = false;
@@ -409,29 +480,72 @@ export async function processTaskIpc(
       );
       break;
 
-    case 'install_skills':
-      // Admin operation — managed from the dashboard
-      logger.warn(
-        { sourceGroup },
-        'Unauthorized install_skills attempt blocked',
-      );
-      break;
+    case 'install_skills': {
+      if (!data.repo || !data.requestId) {
+        logger.warn({ sourceGroup }, 'install_skills missing repo or requestId');
+        break;
+      }
 
-    case 'remove_skill':
-      // Admin operation — managed from the dashboard
-      logger.warn(
-        { sourceGroup },
-        'Unauthorized remove_skill attempt blocked',
-      );
-      break;
+      if (!process.env.PEPPER_CLOUD_URL) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: 'Cannot validate against catalog: PEPPER_CLOUD_URL not configured.',
+        });
+        break;
+      }
 
-    case 'list_skills':
-      // Admin operation — managed from the dashboard
-      logger.warn(
-        { sourceGroup },
-        'Unauthorized list_skills attempt blocked',
+      const catalogSkills = await fetchCatalogSkills();
+      if (!isSkillInCatalog(data.repo, catalogSkills)) {
+        logger.warn(
+          { sourceGroup, repo: data.repo },
+          'Skill not in Pepper catalog, rejecting install',
+        );
+        writeIpcResponse(sourceGroup, data.requestId, {
+          error: `Skill not found in Pepper catalog. Use find-skill to browse available skills.`,
+        });
+        break;
+      }
+
+      const result = await installSkillsFromRepo(data.repo);
+      writeIpcResponse(sourceGroup, data.requestId, result);
+
+      const hasRequiredInputs = result.requiredInputs?.some((i) => i.required) ?? false;
+      if (!result.error && !hasRequiredInputs) {
+        deps.restartAgent(sourceGroup);
+      }
+
+      logger.info(
+        { sourceGroup, repo: data.repo, installed: result.installed, error: result.error },
+        result.error ? 'Skill install failed' : 'Skill install complete',
       );
       break;
+    }
+
+    case 'remove_skill': {
+      if (!data.name || !data.requestId) {
+        logger.warn({ sourceGroup }, 'remove_skill missing name or requestId');
+        break;
+      }
+
+      const result = removeSkill(data.name);
+      writeIpcResponse(sourceGroup, data.requestId, result);
+      logger.info(
+        { sourceGroup, name: data.name, removed: result.removed },
+        'Skill removed via IPC',
+      );
+      break;
+    }
+
+    case 'list_skills': {
+      if (!data.requestId) {
+        logger.warn({ sourceGroup }, 'list_skills missing requestId');
+        break;
+      }
+
+      const result = listSkills();
+      writeIpcResponse(sourceGroup, data.requestId, result);
+      logger.info({ sourceGroup, count: result.skills.length }, 'Skills listed via IPC');
+      break;
+    }
 
     case 'add_mcp_server':
       // Admin operation — managed from the dashboard
