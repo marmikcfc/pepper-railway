@@ -1,10 +1,12 @@
 import { createHmac } from 'crypto';
 import { logger } from './logger.js';
+import { hasSeenUpdate, markSeenUpdate } from './telegram-idempotency.js';
 
 interface PendingMessage {
   id: string;
   chat_id: string;
   update_payload: unknown;
+  update_id?: number | null;
 }
 
 /**
@@ -21,6 +23,7 @@ export async function drainPendingTelegramMessages(
   const agentId = process.env.AGENT_ID;
   const secret = process.env.PEPPER_EVENT_SECRET;
   if (!cloudUrl || !agentId || !secret) return;
+  const boundAgentId = agentId;
 
   // Sign the agentId as the payload (matches pending endpoint verifyHmac)
   const signature = createHmac('sha256', secret).update(agentId).digest('hex');
@@ -42,8 +45,17 @@ export async function drainPendingTelegramMessages(
     logger.info({ count: messages.length }, 'telegram-drain: processing pending messages');
 
     for (const msg of messages) {
+      const updateId =
+        typeof msg.update_id === 'number'
+          ? msg.update_id
+          : (msg.update_payload as { update_id?: number } | null)?.update_id;
+      if (typeof updateId === 'number' && hasSeenUpdate(boundAgentId, updateId)) {
+        logger.info({ update_id: updateId }, 'telegram-drain: skipping already-seen update');
+        continue;
+      }
       try {
         await handleUpdate(msg.update_payload);
+        if (typeof updateId === 'number') markSeenUpdate(boundAgentId, updateId);
       } catch (err: any) {
         logger.warn({ err, messageId: msg.id }, 'telegram-drain: failed to process message');
       }

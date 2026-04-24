@@ -5,6 +5,7 @@ import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { downloadBuffer, processAttachment, processImage, processPdf } from '../media.js';
 import { registerChannel, ChannelOpts } from './registry.js';
+import { hasSeenUpdate, markSeenUpdate } from '../telegram-idempotency.js';
 import {
   Channel,
   OnChatMetadata,
@@ -254,10 +255,20 @@ export class TelegramChannel implements Channel {
       logger.error('[tg-channel] handleUpdate called but bot is null — not initialized');
       return;
     }
-    const upd = update as { message?: { chat?: { id: number }; text?: string } };
-    logger.info({ chatId: upd.message?.chat?.id, text: upd.message?.text?.slice(0, 60) }, '[tg-channel] dispatching to grammY');
+    const upd = update as {
+      update_id?: number;
+      message?: { chat?: { id: number }; text?: string };
+    };
+    const agentId = process.env.AGENT_ID;
+    const updateId = typeof upd.update_id === 'number' ? upd.update_id : undefined;
+    if (agentId && updateId !== undefined && hasSeenUpdate(agentId, updateId)) {
+      logger.info({ update_id: updateId }, '[tg-channel] skip duplicate update');
+      return;
+    }
+    logger.info({ chatId: upd.message?.chat?.id, text: upd.message?.text?.slice(0, 60), update_id: updateId }, '[tg-channel] dispatching to grammY');
     try {
       await this.bot.handleUpdate(update as Parameters<typeof this.bot.handleUpdate>[0]);
+      if (agentId && updateId !== undefined) markSeenUpdate(agentId, updateId);
       logger.info('[tg-channel] grammY handleUpdate completed');
     } catch (err) {
       logger.error({ err: err instanceof Error ? err.stack : err }, '[tg-channel] grammY handleUpdate THREW');

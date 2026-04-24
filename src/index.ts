@@ -817,12 +817,11 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    proxyServer?.close();
-    await queue.shutdown(10000);
-    for (const ch of channels) await ch.disconnect();
 
-    // Notify cloud so Supabase status flips to 'sleeping' before exit.
-    // Without this, Vercel keeps forwarding new messages to a dead service.
+    // Notify cloud FIRST so Supabase status flips to 'sleeping' before we
+    // start refusing HTTP connections. Any in-flight webhook hits while we're
+    // draining will see status=sleeping, skip the forward, and land in the
+    // durable inbox instead of hitting a closing HTTP server.
     const _cloudUrl = process.env.PEPPER_CLOUD_URL;
     const _agentId = process.env.AGENT_ID;
     const _secret = process.env.PEPPER_EVENT_SECRET;
@@ -841,6 +840,10 @@ async function main(): Promise<void> {
         logger.warn({ err }, 'Failed to notify cloud of sleep');
       }
     }
+
+    proxyServer?.close();
+    await queue.shutdown(10000);
+    for (const ch of channels) await ch.disconnect();
 
     process.exit(0);
   };
