@@ -18,7 +18,6 @@ import fs from 'fs';
 import path from 'path';
 import { createHmac } from 'crypto';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import * as telemetry from './telemetry.js';
 
@@ -92,7 +91,18 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-// SDKUserMessage is imported from @anthropic-ai/claude-agent-sdk above
+type SDKMessageContent = string | Array<{
+  type: 'text' | 'image' | 'document';
+  text?: string;
+  source?: { type: 'base64'; media_type: string; data: string };
+}>;
+
+interface SDKUserMessage {
+  type: 'user';
+  message: { role: 'user'; content: SDKMessageContent };
+  parent_tool_use_id: null;
+  session_id: string;
+}
 
 const MCP_JSON_PATH = '/home/node/.claude/.mcp.json';
 const IPC_INPUT_DIR = process.env.PEPPER_IPC_INPUT || '/workspace/ipc/input';
@@ -111,11 +121,12 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(content: string): void {
+  push(content: SDKMessageContent): void {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content },
       parent_tool_use_id: null,
+      session_id: '',
     });
     this.waiting?.();
   }
