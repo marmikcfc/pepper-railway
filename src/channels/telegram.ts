@@ -118,6 +118,7 @@ export class TelegramChannel implements Channel {
         isGroup,
       );
 
+      logger.info({ chatJid, chatName, sender: senderName, contentLen: content.length }, '[tg-channel] calling onMessage');
       this.opts.onMessage(chatJid, {
         id: msgId,
         chat_jid: chatJid,
@@ -131,7 +132,7 @@ export class TelegramChannel implements Channel {
 
       logger.info(
         { chatJid, chatName, sender: senderName },
-        'Telegram message stored',
+        '[tg-channel] Telegram message stored',
       );
     });
 
@@ -250,10 +251,18 @@ export class TelegramChannel implements Channel {
    */
   async handleUpdate(update: unknown): Promise<void> {
     if (!this.bot) {
-      logger.warn('Telegram bot not initialized — cannot handle update');
+      logger.error('[tg-channel] handleUpdate called but bot is null — not initialized');
       return;
     }
-    await this.bot.handleUpdate(update as Parameters<typeof this.bot.handleUpdate>[0]);
+    const upd = update as { message?: { chat?: { id: number }; text?: string } };
+    logger.info({ chatId: upd.message?.chat?.id, text: upd.message?.text?.slice(0, 60) }, '[tg-channel] dispatching to grammY');
+    try {
+      await this.bot.handleUpdate(update as Parameters<typeof this.bot.handleUpdate>[0]);
+      logger.info('[tg-channel] grammY handleUpdate completed');
+    } catch (err) {
+      logger.error({ err: err instanceof Error ? err.stack : err }, '[tg-channel] grammY handleUpdate THREW');
+      throw err;
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {

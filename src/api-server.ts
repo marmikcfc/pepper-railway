@@ -401,25 +401,36 @@ async function handleSlackIncoming(body: unknown, res: http.ServerResponse): Pro
 
 async function handleTelegramIncoming(body: unknown, res: http.ServerResponse): Promise<void> {
   const { update } = body as { update?: unknown };
+  logger.info({ has_update: !!update }, '[tg-incoming] received from Vercel gateway');
   if (!update) {
+    logger.warn('[tg-incoming] missing update field in body');
     json(res, 400, { error: 'Missing update' });
     return;
   }
+
+  const upd = update as { message?: { chat?: { id: number }; text?: string; message_id?: number } };
+  logger.info({ chatId: upd.message?.chat?.id, text: upd.message?.text?.slice(0, 60), msgId: upd.message?.message_id }, '[tg-incoming] update parsed');
 
   const tgChannel = connectedChannels.find(
     (ch) => ch.name === 'telegram' && 'handleUpdate' in ch,
   ) as (Channel & { handleUpdate(u: unknown): Promise<void> }) | undefined;
 
+  logger.info({ found: !!tgChannel, connectedChannelCount: connectedChannels.length, channelNames: connectedChannels.map((c) => c.name) }, '[tg-incoming] channel lookup');
+
   if (!tgChannel) {
+    logger.error('[tg-incoming] Telegram channel NOT connected — cannot handle update');
     json(res, 503, { error: 'Telegram channel not connected' });
     return;
   }
 
   // Acknowledge immediately — processing is async (mirrors handleCronTick pattern)
   json(res, 200, { ok: true });
+  logger.info('[tg-incoming] 200 sent to Vercel, dispatching handleUpdate');
 
-  tgChannel.handleUpdate(update).catch((err) => {
-    logger.error({ err: err instanceof Error ? err.stack : err, update: JSON.stringify(update).slice(0, 200) }, 'Telegram handleUpdate failed');
+  tgChannel.handleUpdate(update).then(() => {
+    logger.info('[tg-incoming] handleUpdate completed');
+  }).catch((err) => {
+    logger.error({ err: err instanceof Error ? err.stack : err, update: JSON.stringify(update).slice(0, 200) }, '[tg-incoming] handleUpdate FAILED');
   });
 }
 
