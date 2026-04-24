@@ -19,7 +19,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "^0.91.0",
     "@slack/bolt": "^4.6.0",
     "@slack/types": "^2.20.0",
     "@types/qrcode-terminal": "^0.12.2",
