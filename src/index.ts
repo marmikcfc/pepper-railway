@@ -820,6 +820,28 @@ async function main(): Promise<void> {
     proxyServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+
+    // Notify cloud so Supabase status flips to 'sleeping' before exit.
+    // Without this, Vercel keeps forwarding new messages to a dead service.
+    const _cloudUrl = process.env.PEPPER_CLOUD_URL;
+    const _agentId = process.env.AGENT_ID;
+    const _secret = process.env.PEPPER_EVENT_SECRET;
+    if (IS_RAILWAY && _cloudUrl && _agentId && _secret) {
+      try {
+        const sleepBody = JSON.stringify({ sleeping: true });
+        const sig = crypto.createHmac('sha256', _secret).update(sleepBody).digest('hex');
+        await fetch(`${_cloudUrl}/api/agents/${_agentId}/sleep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-event-signature': sig },
+          body: sleepBody,
+          signal: AbortSignal.timeout(5_000),
+        });
+        logger.info('Notified cloud: agent sleeping');
+      } catch (err) {
+        logger.warn({ err }, 'Failed to notify cloud of sleep');
+      }
+    }
+
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
