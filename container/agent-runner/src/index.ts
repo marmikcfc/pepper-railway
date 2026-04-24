@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHmac } from 'crypto';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import * as telemetry from './telemetry.js';
 
@@ -91,18 +92,7 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-type SDKMessageContent = string | Array<{
-  type: 'text' | 'image' | 'document';
-  text?: string;
-  source?: { type: 'base64'; media_type: string; data: string };
-}>;
-
-interface SDKUserMessage {
-  type: 'user';
-  message: { role: 'user'; content: SDKMessageContent };
-  parent_tool_use_id: null;
-  session_id: string;
-}
+// SDKUserMessage is imported from @anthropic-ai/claude-agent-sdk above
 
 const MCP_JSON_PATH = '/home/node/.claude/.mcp.json';
 const IPC_INPUT_DIR = process.env.PEPPER_IPC_INPUT || '/workspace/ipc/input';
@@ -121,12 +111,11 @@ class MessageStream {
   private waiting: (() => void) | null = null;
   private done = false;
 
-  push(content: SDKMessageContent): void {
+  push(content: string): void {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content },
       parent_tool_use_id: null,
-      session_id: '',
     });
     this.waiting?.();
   }
@@ -463,7 +452,7 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 async function runQuery(
-  initialContent: SDKMessageContent,
+  initialContent: string,
   sessionId: string | undefined,
   mcpServerPath: string,
   containerInput: ContainerInput,
@@ -589,7 +578,7 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
 
   const modelOverride = sdkEnv.ANTHROPIC_MODEL;
 
-  const promptForTelemetry = typeof initialContent === 'string' ? initialContent : (initialContent.find((b) => b.type === 'text') as { text?: string })?.text || '(multimodal)';
+  const promptForTelemetry = initialContent;
 
   telemetry.onQueryStart(promptForTelemetry, sessionId);
 
@@ -826,7 +815,7 @@ async function main(): Promise<void> {
     ? '\n\n' + fileNotes.join('\n') + '\nUse the Read tool to view these files.'
     : '';
 
-  const initialContent: SDKMessageContent = promptText + fileNoteSuffix;
+  const initialContent = promptText + fileNoteSuffix;
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
