@@ -714,6 +714,11 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       const finalText = textResult || lastAssistantText || null;
       log(`Result #${resultCount}: subtype=${message.subtype}${finalText ? ` text=${finalText.slice(0, 200)}` : ''}`);
+      // redacted_thinking blocks are encrypted per-API-request and expire — the session history
+      // is now invalid. Throw so the caller can retry with a fresh session.
+      if (finalText?.includes('redacted_thinking')) {
+        throw Object.assign(new Error(`Stale redacted_thinking in session history: ${finalText.slice(0, 300)}`), { staleThinking: true });
+      }
       writeOutput({
         status: 'success',
         result: finalText,
@@ -830,6 +835,7 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  let staleThinkingRetried = false;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
@@ -846,7 +852,22 @@ async function main(): Promise<void> {
 
       // First query uses multimodal initialContent; IPC followups are always plain text
       const queryContent = resumeAt === undefined ? initialContent : promptText;
-      const queryResult = await runQuery(queryContent, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      let queryResult: Awaited<ReturnType<typeof runQuery>>;
+      try {
+        queryResult = await runQuery(queryContent, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      } catch (err) {
+        const isStale = (err as { staleThinking?: boolean }).staleThinking ||
+          (err instanceof Error && err.message.includes('redacted_thinking'));
+        if (isStale && !staleThinkingRetried) {
+          log('[redacted-thinking] Stale thinking blocks in session history — retrying with fresh session');
+          staleThinkingRetried = true;
+          sessionId = undefined;
+          resumeAt = undefined;
+          queryResult = await runQuery(initialContent, undefined, mcpServerPath, containerInput, sdkEnv, undefined);
+        } else {
+          throw err;
+        }
+      }
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
