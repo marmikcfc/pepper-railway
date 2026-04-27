@@ -343,6 +343,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     prompt = formatMessages(missedMessages, TIMEZONE);
   }
 
+  // Long-gap context recovery: when more than 30 minutes have passed since the
+  // last agent run, inject the last response text so the agent knows what it
+  // told the user even if the session transcript was compacted or lost.
+  const gapMs = sinceTimestamp
+    ? Date.now() - new Date(sinceTimestamp).getTime()
+    : 0;
+  if (gapMs > 30 * 60_000 && sessions[group.folder]) {
+    const lastResponseKey = `last_response_${chatJid}`;
+    const lastResponse = getRouterState(lastResponseKey);
+    if (lastResponse) {
+      const gapMin = Math.round(gapMs / 60_000);
+      prompt = `[Context: ${gapMin} minutes have passed since your last reply. Your last message to ${group.name} was:\n"${lastResponse}"\nContinue from there.]\n\n` + prompt;
+      logger.info({ group: group.name, gapMin }, 'Injected last-response context after long gap');
+    }
+  }
+
   // Pull task context from cloud (only on first message per task_id)
   if (webchatTaskId) {
     const taskContext = await getTaskContextIfNeeded(webchatTaskId);
@@ -416,6 +432,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         await channel.sendMessage(chatJid, text);
         logger.info({ group: group.name, chatJid, textLength: text.length }, 'Response sent to user');
         outputSentToUser = true;
+        // Persist last response for long-gap context recovery (first 800 chars)
+        setRouterState(`last_response_${chatJid}`, text.slice(0, 800));
       } else {
         logger.warn({ group: group.name, rawLength: raw.length }, 'Agent response was empty after stripping <internal> blocks — nothing sent to user');
       }
