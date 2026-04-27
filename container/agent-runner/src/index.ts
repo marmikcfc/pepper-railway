@@ -23,6 +23,117 @@ import * as telemetry from './telemetry.js';
 
 let lastContextPrompt: string | null = null;
 
+// ─── Human Approval ────────────────────────────────────────────────────────
+
+// Tools that are always safe to auto-approve in write_actions mode
+const READ_ONLY_TOOLS = new Set([
+  'Read', 'Glob', 'Grep', 'LS',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TodoWrite', 'ToolSearch', 'Skill',
+]);
+
+/**
+ * Create a pending approval on the cloud and return its ID.
+ * Returns null if the request fails (will cause canUseTool to deny).
+ */
+async function createApproval(
+  cloudUrl: string,
+  wsId: string,
+  agentId: string,
+  secret: string,
+  toolName: string,
+  toolInput: unknown,
+  taskId: string | undefined,
+): Promise<string | null> {
+  const body = JSON.stringify({ tool_name: toolName, tool_input: toolInput ?? {}, task_id: taskId });
+  const sig = createHmac('sha256', secret).update(body).digest('hex');
+  try {
+    const res = await fetch(`${cloudUrl}/api/workspaces/${wsId}/agents/${agentId}/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Event-Signature': sig },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.approval_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Poll the cloud for the approval decision.
+ * Polls every 3s for up to 5 minutes, then returns 'timeout'.
+ */
+async function pollApproval(
+  cloudUrl: string,
+  wsId: string,
+  agentId: string,
+  secret: string,
+  approvalId: string,
+): Promise<'approved' | 'denied' | 'timeout'> {
+  const deadline = Date.now() + 5 * 60 * 1000;
+  const sig = createHmac('sha256', secret).update(approvalId).digest('hex');
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const res = await fetch(
+        `${cloudUrl}/api/workspaces/${wsId}/agents/${agentId}/approval/${approvalId}`,
+        { headers: { 'X-Event-Signature': sig }, signal: AbortSignal.timeout(5000) }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.status === 'approved') return 'approved';
+      if (data.status === 'denied') return 'denied';
+    } catch { /* network hiccup, keep polling */ }
+  }
+  return 'timeout';
+}
+
+type CanUseToolFn = (toolName: string, input: unknown) => Promise<{ behavior: 'allow' } | { behavior: 'deny'; message: string }>;
+
+/**
+ * Build a canUseTool callback for the given approval mode.
+ * Returns undefined for 'yolo' (caller uses bypassPermissions instead).
+ */
+function buildCanUseTool(
+  mode: string,
+  cloudUrl: string,
+  wsId: string,
+  agentId: string,
+  secret: string,
+  taskId: string | undefined,
+): CanUseToolFn | undefined {
+  if (mode === 'yolo' || !cloudUrl || !wsId || !agentId || !secret) return undefined;
+
+  return async (toolName: string, input: unknown) => {
+    const needsApproval =
+      mode === 'always' ||
+      (mode === 'write_actions' && !READ_ONLY_TOOLS.has(toolName));
+
+    if (!needsApproval) return { behavior: 'allow' };
+
+    log(`[approval] requesting approval for ${toolName}`);
+    const approvalId = await createApproval(cloudUrl, wsId, agentId, secret, toolName, input, taskId);
+    if (!approvalId) {
+      log(`[approval] failed to create approval — denying ${toolName}`);
+      return { behavior: 'deny', message: 'Could not reach approval service — tool call denied.' };
+    }
+
+    const decision = await pollApproval(cloudUrl, wsId, agentId, secret, approvalId);
+    log(`[approval] ${toolName} → ${decision}`);
+
+    if (decision === 'approved') return { behavior: 'allow' };
+    const msg = decision === 'timeout'
+      ? `Approval timed out after 5 minutes — ${toolName} denied.`
+      : `User denied ${toolName}.`;
+    return { behavior: 'deny', message: msg };
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+
 async function fetchWorkspaceContext(taskTitle: string): Promise<string> {
   const cloudUrl = process.env.PEPPER_CLOUD_URL;
   const wsId = process.env.WORKSPACE_ID;
@@ -593,6 +704,15 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
 
   telemetry.onQueryStart(promptForTelemetry, sessionId);
 
+  const approvalMode = process.env.AGENT_APPROVAL_MODE ?? 'yolo';
+  const approvalCloudUrl = process.env.PEPPER_CLOUD_URL ?? '';
+  const approvalWsId = process.env.WORKSPACE_ID ?? '';
+  const approvalAgentId = process.env.AGENT_ID ?? '';
+  const approvalSecret = process.env.PEPPER_EVENT_SECRET ?? '';
+  const approvalTaskId = process.env.TASK_ID || undefined;
+
+  const canUseTool = buildCanUseTool(approvalMode, approvalCloudUrl, approvalWsId, approvalAgentId, approvalSecret, approvalTaskId);
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -618,8 +738,9 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
         ...composioToolPatterns,
       ],
       env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      ...(canUseTool
+        ? { canUseTool }
+        : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
       settingSources: ['project', 'user'],
       mcpServers: {
         pepper: {
