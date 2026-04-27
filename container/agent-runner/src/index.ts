@@ -428,6 +428,40 @@ function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
   };
 }
 
+/**
+ * Auto-capture important file writes to workspace memory.
+ * Fires after Write/Edit so agents don't have to manually remember every file they create.
+ */
+function createMemoryAutoCaptureHook(): HookCallback {
+  return async (input, _toolUseId, _context) => {
+    const hookInput = input as unknown as { tool_name: string; tool_input: Record<string, unknown> };
+    const toolName = hookInput.tool_name;
+    if (toolName !== 'Write' && toolName !== 'Edit') return {};
+
+    const cloudUrl = process.env.PEPPER_CLOUD_URL;
+    const wsId = process.env.WORKSPACE_ID;
+    const agentId = process.env.AGENT_ID;
+    const secret = process.env.PEPPER_EVENT_SECRET;
+    if (!cloudUrl || !wsId || !agentId || !secret) return {};
+
+    const filePath = hookInput.tool_input?.file_path as string | undefined;
+    if (!filePath) return {};
+
+    const fact = `Agent wrote file: ${filePath}`;
+    const body = JSON.stringify({ fact, agent_id: agentId });
+    const sig = createHmac('sha256', secret).update(body).digest('hex');
+
+    fetch(`${cloudUrl}/api/workspaces/${wsId}/memory/remember`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Event-Signature': sig },
+      body,
+      signal: AbortSignal.timeout(5_000),
+    }).catch(err => log(`[memory-autocapture] non-fatal: ${err instanceof Error ? err.message : String(err)}`));
+
+    return {};
+  };
+}
+
 function sanitizeFilename(summary: string): string {
   return summary
     .toLowerCase()
@@ -753,7 +787,10 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
             PEPPER_CLOUD_URL: process.env.PEPPER_CLOUD_URL || '',
             PEPPER_EVENT_SECRET: process.env.PEPPER_EVENT_SECRET || '',
             TENANT_ID: process.env.TENANT_ID || '',
+            AGENT_ID: process.env.AGENT_ID || '',
+            WORKSPACE_ID: process.env.WORKSPACE_ID || '',
             TASK_ID: process.env.TASK_ID || '',
+            RAILWAY_PUBLIC_DOMAIN: process.env.RAILWAY_PUBLIC_DOMAIN || '',
           },
         },
         ...extraMcpServers,
@@ -762,6 +799,7 @@ Never attempt to call WebSearch or WebFetch — they are not allowed and will er
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook((containerInput as unknown as Record<string, unknown>).secretKeyNames as string[] || [])] }],
+        PostToolUse: [{ matcher: 'Write', hooks: [createMemoryAutoCaptureHook()] }, { matcher: 'Edit', hooks: [createMemoryAutoCaptureHook()] }],
       },
     }
   })) {

@@ -183,13 +183,41 @@ When you learn something important:
 
 ### Shared Workspace Memory
 
-To share findings with other agents in the workspace, use the workspace memory tool:
+You have a shared workspace memory that persists across all agents and sessions. Use it aggressively.
 
+**Tool:**
 ```
 mcp__pepper__workspace_memory({ action: "remember", text: "Key finding about X" })
 mcp__pepper__workspace_memory({ action: "search", text: "what do we know about X" })
 mcp__pepper__workspace_memory({ action: "context", text: "task description" })
 mcp__pepper__workspace_memory({ action: "activity" })
+```
+
+**When you MUST search memory:**
+- User asks about something that happened before ("did we...", "what was...", "do you remember...")
+- Starting a task that builds on prior work (research, code, campaigns)
+- Another agent is mentioned or you're collaborating with teammates
+
+**When you MUST remember:**
+- You complete a research finding with a clear conclusion
+- You make an architectural or strategic decision (even small ones)
+- You discover something about the user's company, customers, or competitors
+- A task completes successfully — store the outcome and what was done
+- You create a key deliverable (report, plan, analysis) — store its title and location
+
+**Auto-captured for you (no action needed):**
+- File writes — every Write/Edit tool call is automatically logged to shared memory
+
+**Example usage:**
+```
+# Starting a research task → search first
+mcp__pepper__workspace_memory({ action: "context", text: "competitive analysis for B2B SaaS pricing" })
+
+# After finding something important
+mcp__pepper__workspace_memory({ action: "remember", text: "Competitor Acme raised prices 20% in Jan 2026. Source: their blog post." })
+
+# After completing a task
+mcp__pepper__workspace_memory({ action: "remember", text: "Completed ICP persona for Series A SaaS founders. File: /workspace/group/icp-persona.md" })
 ```
 
 ## Message Formatting
