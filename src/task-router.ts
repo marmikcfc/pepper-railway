@@ -97,16 +97,16 @@ function extractMessage(raw: string): string {
   return (match ? match[1] : raw).trim()
 }
 
-async function createCloudTask(
+export async function createCloudTask(
   cloudUrl: string,
   agentId: string,
   eventSecret: string,
-  opts: { message: string; channel: string; origin: string; chatJid: string; isMisc?: boolean },
+  opts: { message?: string; channel: string; origin?: string; chatJid: string; isMisc?: boolean },
 ): Promise<string | null> {
   const body = JSON.stringify({
-    title: opts.isMisc ? undefined : extractMessage(opts.message).slice(0, 80),
+    title: opts.isMisc ? undefined : (opts.message ? extractMessage(opts.message).slice(0, 80) : undefined),
     channel: opts.channel,
-    origin: opts.origin,
+    ...(opts.origin && { origin: opts.origin }),
     chat_jid: opts.chatJid,
     ...(opts.isMisc && { is_misc: true }),
   })

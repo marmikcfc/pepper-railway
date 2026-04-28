@@ -51,6 +51,7 @@ import {
   storeMessage,
 } from './db.js';
 import { getTaskContextIfNeeded } from './context-fetcher.js';
+import { createCloudTask } from './task-router.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -181,6 +182,67 @@ function saveState(): void {
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
 }
 
+/** Returns the stable misc task_id for a Telegram chatJid, creating it on first call. */
+async function getOrCreateChannelTask(chatJid: string): Promise<string | null> {
+  const cacheKey = `channel_task_${chatJid}`;
+  const cached = getRouterState(cacheKey);
+  if (cached) return cached;
+
+  const cloudUrl = process.env.PEPPER_CLOUD_URL;
+  const agentId = process.env.AGENT_ID;
+  const secret = process.env.PEPPER_EVENT_SECRET;
+  if (!cloudUrl || !agentId || !secret) return null;
+
+  const taskId = await createCloudTask(cloudUrl, agentId, secret, {
+    channel: 'telegram',
+    chatJid,
+    isMisc: true,
+  });
+
+  if (taskId) setRouterState(cacheKey, taskId);
+  return taskId;
+}
+
+/** Emits user messages as telegram_user_message events to the cloud dashboard. */
+async function emitUserMessagesToCloud(
+  chatJid: string,
+  messages: NewMessage[],
+  taskId: string,
+): Promise<void> {
+  const cloudUrl = process.env.PEPPER_CLOUD_URL;
+  const agentId = process.env.AGENT_ID;
+  const secret = process.env.PEPPER_EVENT_SECRET;
+  if (!cloudUrl || !agentId || !secret || messages.length === 0) return;
+
+  const events = messages.map((msg, i) => ({
+    id: crypto.randomUUID(),
+    agent_id: agentId,
+    trace_id: crypto.randomUUID(), // standalone trace per user message
+    parent_event_id: null,
+    seq: i,
+    event_type: 'telegram_user_message',
+    status: 'complete',
+    agent_name: ASSISTANT_NAME,
+    channel: 'telegram',
+    task_id: taskId,
+    data: { text: msg.content, sender: msg.sender_name ?? msg.sender ?? 'User' },
+    tokens_used: null,
+    cost_usd: null,
+    duration_ms: null,
+    client_ts: msg.timestamp,
+  }));
+
+  const body = JSON.stringify({ events });
+  const sig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+
+  await fetch(`${cloudUrl}/api/events/${agentId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-event-signature': sig },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
 function registerGroup(jid: string, group: RegisteredGroup): void {
   let groupDir: string;
   try {
@@ -299,6 +361,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // For Telegram: resolve/create a stable per-chatJid misc task and emit user messages to cloud
+  let telegramTaskId: string | null = null;
+  if (chatJid.startsWith('tg:')) {
+    telegramTaskId = await getOrCreateChannelTask(chatJid).catch(err => {
+      logger.warn({ err, chatJid }, 'Failed to get/create Telegram channel task');
+      return null;
+    });
+    if (telegramTaskId) {
+      const userMessages = missedMessages.filter(m => !m.is_from_me);
+      emitUserMessagesToCloud(chatJid, userMessages, telegramTaskId).catch(err =>
+        logger.warn({ err, chatJid }, 'Failed to emit telegram user messages to cloud'),
+      );
+    }
+  }
+
   // Log incoming messages for observability
   logger.info(
     {
@@ -402,8 +479,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  const effectiveTaskId = telegramTaskId ?? webchatTaskId;
   if (channel.ownsJid('admin@pepper')) { runningWebchatTaskId = webchatTaskId; webchatAgentIdle = false; }
-  const output = await runAgent(group, prompt, chatJid, attachments.length ? attachments : undefined, webchatTaskId, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, attachments.length ? attachments : undefined, effectiveTaskId, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
