@@ -235,6 +235,29 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
     this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
+    // Inline-button callbacks for approval requests (approve:<id> | deny:<id>).
+    this.bot.on('callback_query:data', async (ctx) => {
+      const data = ctx.callbackQuery.data;
+      const match = /^(approve|deny):(.+)$/.exec(data);
+      if (!match) return;
+
+      const decision = match[1] === 'approve' ? 'approved' : 'denied';
+      const approvalId = match[2];
+
+      try {
+        await postApprovalDecision(approvalId, decision);
+        await ctx.answerCallbackQuery({ text: decision === 'approved' ? '✅ Approved' : '❌ Denied' });
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+        } catch (err) {
+          logger.warn({ err, approvalId }, 'Failed to clear inline keyboard');
+        }
+      } catch (err) {
+        logger.error({ err, approvalId, decision }, 'Failed to relay approval decision');
+        await ctx.answerCallbackQuery({ text: '⚠️ Could not record decision', show_alert: true });
+      }
+    });
+
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
     });
@@ -316,6 +339,33 @@ export class TelegramChannel implements Channel {
     }
   }
 
+  async sendApprovalRequest(
+    jid: string,
+    approvalId: string,
+    toolName: string,
+    summary: string,
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const text = `🔐 Approval needed\nTool: ${toolName}${summary ? `\n${summary}` : ''}`;
+      await this.bot.api.sendMessage(numericId, text, {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Approve', callback_data: `approve:${approvalId}` },
+            { text: '❌ Deny', callback_data: `deny:${approvalId}` },
+          ]],
+        },
+      });
+      logger.info({ jid, approvalId }, 'Telegram approval request sent');
+    } catch (err) {
+      logger.error({ jid, approvalId, err }, 'Failed to send Telegram approval request');
+    }
+  }
+
   async sendFile(jid: string, url: string, filename: string, mimeType: string): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
@@ -392,6 +442,30 @@ export class TelegramChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }
+  }
+}
+
+async function postApprovalDecision(
+  approvalId: string,
+  decision: 'approved' | 'denied',
+): Promise<void> {
+  const cloudUrl = process.env.PEPPER_CLOUD_URL;
+  const secret = process.env.PEPPER_EVENT_SECRET;
+  if (!cloudUrl || !secret) {
+    throw new Error('PEPPER_CLOUD_URL or PEPPER_EVENT_SECRET not set');
+  }
+  const body = JSON.stringify({ decision });
+  const { createHmac } = await import('crypto');
+  const signature = createHmac('sha256', secret).update(body).digest('hex');
+
+  const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/api/approvals/${approvalId}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Event-Signature': signature },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`decide endpoint returned ${res.status}`);
   }
 }
 

@@ -365,6 +365,48 @@ async function handleResetSession(body: unknown, res: http.ServerResponse): Prom
   json(res, 200, { ok: true });
 }
 
+async function handlePushApproval(body: unknown, res: http.ServerResponse): Promise<void> {
+  const p = body as {
+    channel?: string;
+    chat_jid?: string;
+    approval_id?: string;
+    tool_name?: string;
+    tool_input_summary?: string;
+  };
+
+  if (!p.channel || !p.chat_jid || !p.approval_id) {
+    json(res, 400, { error: 'Missing channel, chat_jid, or approval_id' });
+    return;
+  }
+
+  const channel = connectedChannels.find((ch) => ch.name === p.channel && ch.isConnected());
+  if (!channel) {
+    json(res, 503, { error: `Channel "${p.channel}" not connected` });
+    return;
+  }
+
+  // Duck-type: only channels exposing sendApprovalRequest can render buttons.
+  const cap = channel as Channel & {
+    sendApprovalRequest?: (
+      jid: string,
+      approvalId: string,
+      toolName: string,
+      summary: string,
+    ) => Promise<void>;
+  };
+  if (!cap.sendApprovalRequest) {
+    json(res, 501, { error: `Channel "${p.channel}" does not support approval buttons` });
+    return;
+  }
+
+  json(res, 200, { ok: true });
+  cap
+    .sendApprovalRequest(p.chat_jid, p.approval_id, p.tool_name ?? 'tool', p.tool_input_summary ?? '')
+    .catch((err) => {
+      logger.error({ err, approval_id: p.approval_id, chat_jid: p.chat_jid }, 'sendApprovalRequest failed');
+    });
+}
+
 async function handleStopQuery(_body: unknown, res: http.ServerResponse): Promise<void> {
   const killed = _killProcess?.('admin@pepper');
   if (!killed) {
@@ -373,6 +415,20 @@ async function handleStopQuery(_body: unknown, res: http.ServerResponse): Promis
     return;
   }
   logger.info('Stop-query command received — SIGTERM sent to agent process');
+  json(res, 200, { ok: true });
+}
+
+// Wake an agent because a task transitioned into a status this agent listens for.
+// V1: acknowledge and log. Wiring into the task scheduler so the agent actually
+// picks up the task is the follow-up step of gap 1; the dispatch path is in
+// place so the cloud side can ship independently.
+async function handleWakeTask(body: unknown, res: http.ServerResponse): Promise<void> {
+  const { task_id, reason } = (body as { task_id?: string; reason?: string }) || {};
+  if (!task_id) {
+    json(res, 400, { error: 'task_id required' });
+    return;
+  }
+  logger.info({ task_id, reason }, 'wake-task received');
   json(res, 200, { ok: true });
 }
 
@@ -529,6 +585,8 @@ const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse)
   'telegram-incoming': handleTelegramIncoming,
   'slack-incoming': handleSlackIncoming,
   'stop-query': handleStopQuery,
+  'wake-task': handleWakeTask,
+  'push-approval': handlePushApproval,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
