@@ -59,7 +59,7 @@ export interface AgentEvent {
   client_ts: string; // ISO 8601
 }
 
-const DATA_MAX_BYTES = 65536; // 64KB
+const DATA_MAX_BYTES = 262144; // 256KB
 
 export function truncateEventData(data: EventData): EventData {
   const json = JSON.stringify(data);
