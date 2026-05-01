@@ -27,6 +27,7 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 import { routeTask } from './task-router.js';
+import { syncPersonaToClaudeMd } from './persona-composer.js';
 
 const OUTPUT_START_MARKER = '---PEPPER_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---PEPPER_OUTPUT_END---';
@@ -98,6 +99,26 @@ function prepareWorkspace(
       fs.writeFileSync(targetMd, content);
       logger.info({ folder, targetMd }, 'Synced CLAUDE.md template to volume');
     }
+  }
+
+  // Persona overlay: if the cloud has soul.md / agents.md set for this agent
+  // (and/or users.md at workspace level), append the composed persona onto the
+  // per-group CLAUDE.md so the runtime sees identity + procedures + workspace
+  // context alongside the baseline template. No-op if env vars or persona
+  // content are missing — falls back to the static template above.
+  const personaCloudUrl = process.env.PEPPER_CLOUD_URL || '';
+  const personaWorkspaceId = process.env.WORKSPACE_ID || '';
+  const personaAgentId = process.env.AGENT_ID || '';
+  const personaEventSecret = process.env.PEPPER_EVENT_SECRET || '';
+  if (personaCloudUrl && personaWorkspaceId && personaAgentId && personaEventSecret) {
+    void syncPersonaToClaudeMd({
+      cloudUrl: personaCloudUrl,
+      workspaceId: personaWorkspaceId,
+      agentId: personaAgentId,
+      eventSecret: personaEventSecret,
+      groupDir: path.join(GROUPS_DIR, group.folder),
+      appendToTemplate: true,
+    }).catch(err => logger.warn({ err }, '[persona] sync failed (continuing with static template)'));
   }
 
   // Global memory directory (read-only for all chats)
