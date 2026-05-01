@@ -407,6 +407,33 @@ async function handlePushApproval(body: unknown, res: http.ServerResponse): Prom
     });
 }
 
+// Plain text notification push — used by the cloud's notification-dispatch worker
+// for task `notify_on_done` events. Mirror of handlePushApproval but without
+// inline button rendering — just `sendMessage(jid, text)`.
+async function handlePushNotification(body: unknown, res: http.ServerResponse): Promise<void> {
+  const p = body as {
+    channel?: string;
+    chat_jid?: string;
+    text?: string;
+  };
+
+  if (!p.channel || !p.chat_jid || !p.text) {
+    json(res, 400, { error: 'Missing channel, chat_jid, or text' });
+    return;
+  }
+
+  const channel = connectedChannels.find((ch) => ch.name === p.channel && ch.isConnected());
+  if (!channel) {
+    json(res, 503, { error: `Channel "${p.channel}" not connected` });
+    return;
+  }
+
+  json(res, 200, { ok: true });
+  channel.sendMessage(p.chat_jid, p.text).catch((err) => {
+    logger.error({ err, channel: p.channel, chat_jid: p.chat_jid }, 'sendMessage failed for push-notification');
+  });
+}
+
 async function handleStopQuery(_body: unknown, res: http.ServerResponse): Promise<void> {
   const killed = _killProcess?.('admin@pepper');
   if (!killed) {
@@ -587,6 +614,7 @@ const ALLOWED_COMMANDS: Record<string, (body: unknown, res: http.ServerResponse)
   'stop-query': handleStopQuery,
   'wake-task': handleWakeTask,
   'push-approval': handlePushApproval,
+  'push-notification': handlePushNotification,
 };
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
